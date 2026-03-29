@@ -1,0 +1,9 @@
+{
+  "name": "FogClimb",
+  "version_number": "0.0.2",
+  "website_url": "https://github.com/Thanks/FogClimb",
+  "description": "A host-only PEAK fog climb mode with synced fog movement, campfire beacons, configurable HUD, and compass rewards for the whole room.",
+  "dependencies": [
+    "BepInEx-BepInExPack-5.4.2100"
+  ]
+}
