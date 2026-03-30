@@ -2,9 +2,11 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using BepInEx;
+using BepInEx.Bootstrap;
 using BepInEx.Configuration;
 using HarmonyLib;
 using Photon.Pun;
@@ -24,6 +26,7 @@ public sealed class Plugin : BaseUnityPlugin
 		ModEnabled,
 		FogSpeed,
 		FogDelay,
+		CompassHotkey,
 		FogUiEnabled,
 		FogUiX,
 		FogUiY,
@@ -34,7 +37,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	public const string PluginName = "FogClimb";
 
-	public const string PluginVersion = "0.0.2";
+	public const string PluginVersion = "0.0.6";
 
 	private const float DefaultVanillaFogSpeed = 0.3f;
 
@@ -76,27 +79,44 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private const float RemoteStatusSyncIntervalSeconds = 0.25f;
 
-	private const float BeaconRefreshIntervalSeconds = 1f;
-
 	private const float CompassGrantSyncIntervalSeconds = 0.75f;
 
 	private const float FogColdPerSecond = 0.0105f;
-
-	private const float BeaconBaseHeight = 12f;
-
-	private const float BeaconSegmentHeight = 14f;
-
-	private const int BeaconLayerCount = 7;
-
-	private const float BeaconRingRadius = 4.5f;
 
 	private const float FogUiWidth = 920f;
 
 	private const float FogUiHeight = 30f;
 
-	private const string FogUiTitle = "FogClimb";
+	private const float CompassLobbyNoticeRightOffset = 28f;
+
+	private const float CompassLobbyNoticeDownOffset = 96f;
+
+	private const float CompassLobbyNoticeWidth = 980f;
+
+	private const float CompassLobbyNoticeHeight = 108f;
+
+	private const float CompassLobbyNoticeFontSizeMultiplier = 1.6f;
+
+	private const float CompassLobbyNoticeLineSpacing = 1.5f;
+
+	private const string CompassLobbyNoticeKeyColor = "#FF3B30";
+
+	// Manual entry point for adjusting the granted compass item when auto-detection is wrong.
+	private static readonly ushort CompassItemIdOverride = 0;
+
+	private const string CompassNameKeyword = "Compass";
+
+	private const string ModConfigPluginGuid = "com.github.PEAKModding.PEAKLib.ModConfig";
 
 	private const int SimplifiedChineseLanguageIndex = 9;
+
+	private static readonly BindingFlags InstanceBindingFlags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+	private static readonly BindingFlags StaticBindingFlags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+
+	private static readonly FieldInfo ConfigEntryDescriptionField = typeof(ConfigEntryBase).GetField("<Description>k__BackingField", InstanceBindingFlags);
+
+	private static readonly PropertyInfo ConfigFileEntriesProperty = typeof(ConfigFile).GetProperty("Entries", InstanceBindingFlags);
 
 	private static readonly int StatusTypeCount = Enum.GetNames(typeof(CharacterAfflictions.STATUSTYPE)).Length;
 
@@ -133,13 +153,15 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private float _lastRemoteStatusSyncTime = -RemoteStatusSyncIntervalSeconds;
 
-	private float _lastBeaconRefreshTime = -BeaconRefreshIntervalSeconds;
-
 	private float _lastCompassGrantSyncTime = -CompassGrantSyncIntervalSeconds;
 
 	private bool _lastModEnabledState;
 
 	private bool _lastFogUiEnabledState;
+
+	private bool _lastDetectedChineseLanguage;
+
+	private bool _isRefreshingLanguage;
 
 	private float _lastFogUiX;
 
@@ -147,21 +169,21 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private float _lastFogUiScale;
 
-	private readonly List<GameObject> _campfireBeaconObjects = new List<GameObject>();
-
 	private readonly HashSet<int> _grantedCampfireCompassIds = new HashSet<int>();
 
 	private readonly Dictionary<int, int> _playerCompassGrantCounts = new Dictionary<int, int>();
 
-	private Item _flareBeaconPrefab;
-
 	private Item _compassItem;
-
-	private int _activeBeaconSegment = -1;
 
 	private RectTransform _fogUiRect;
 
 	private TextMeshProUGUI _fogUiText;
+
+	private RectTransform _compassLobbyNoticeRect;
+
+	private TextMeshProUGUI _compassLobbyNoticeText;
+
+	private string _lastCompassLobbyNoticeText = string.Empty;
 
 	private bool _initialCompassGranted;
 
@@ -175,6 +197,8 @@ public sealed class Plugin : BaseUnityPlugin
 
 	internal static ConfigEntry<float> FogDelay { get; private set; }
 
+	internal static ConfigEntry<KeyCode> CompassHotkey { get; private set; }
+
 	internal static ConfigEntry<bool> FogUiEnabled { get; private set; }
 
 	internal static ConfigEntry<float> FogUiX { get; private set; }
@@ -186,8 +210,9 @@ public sealed class Plugin : BaseUnityPlugin
 	private void Awake()
 	{
 		Instance = this;
-		bool isChineseLanguage = DetectChineseLanguage();
-		InitializeConfig(isChineseLanguage);
+		TryCleanupGeneratedBackupFile();
+		_lastDetectedChineseLanguage = DetectChineseLanguage();
+		InitializeConfig(_lastDetectedChineseLanguage);
 		_lastModEnabledState = IsModFeatureEnabled();
 		_lastFogUiEnabledState = FogUiEnabled?.Value ?? true;
 		_lastFogUiX = FogUiX?.Value ?? DefaultFogUiX;
@@ -204,7 +229,7 @@ public sealed class Plugin : BaseUnityPlugin
 		SceneManager.sceneLoaded -= OnSceneLoaded;
 		_harmony?.UnpatchSelf();
 		CleanupFogUi();
-		CleanupCampfireBeacon();
+		CleanupCompassLobbyNotice();
 		if (Instance == this)
 		{
 			Instance = null;
@@ -214,20 +239,29 @@ public sealed class Plugin : BaseUnityPlugin
 	private void InitializeConfig(bool isChineseLanguage)
 	{
 		string sectionName = GetSectionName(isChineseLanguage);
-		ModEnabled = Config.Bind(sectionName, GetKeyName(ConfigKey.ModEnabled, isChineseLanguage), true, GetConfigDescription(ConfigKey.ModEnabled, isChineseLanguage));
-		FogSpeed = Config.Bind(sectionName, GetKeyName(ConfigKey.FogSpeed, isChineseLanguage), DefaultFogSpeed, new ConfigDescription(GetLocalizedDescription(ConfigKey.FogSpeed, isChineseLanguage), new AcceptableValueRange<float>(MinFogSpeed, MaxFogSpeed), Array.Empty<object>()));
-		FogDelay = Config.Bind(sectionName, GetKeyName(ConfigKey.FogDelay, isChineseLanguage), DefaultFogDelaySeconds, new ConfigDescription(GetLocalizedDescription(ConfigKey.FogDelay, isChineseLanguage), new AcceptableValueRange<float>(MinFogDelaySeconds, MaxFogDelaySeconds), Array.Empty<object>()));
-		FogUiEnabled = Config.Bind(sectionName, GetKeyName(ConfigKey.FogUiEnabled, isChineseLanguage), true, GetConfigDescription(ConfigKey.FogUiEnabled, isChineseLanguage));
-		FogUiX = Config.Bind(sectionName, GetKeyName(ConfigKey.FogUiX, isChineseLanguage), DefaultFogUiX, new ConfigDescription(GetLocalizedDescription(ConfigKey.FogUiX, isChineseLanguage), new AcceptableValueRange<float>(MinFogUiX, MaxFogUiX), Array.Empty<object>()));
-		FogUiY = Config.Bind(sectionName, GetKeyName(ConfigKey.FogUiY, isChineseLanguage), DefaultFogUiY, new ConfigDescription(GetLocalizedDescription(ConfigKey.FogUiY, isChineseLanguage), new AcceptableValueRange<float>(MinFogUiY, MaxFogUiY), Array.Empty<object>()));
-		FogUiScale = Config.Bind(sectionName, GetKeyName(ConfigKey.FogUiScale, isChineseLanguage), DefaultFogUiScale, new ConfigDescription(GetLocalizedDescription(ConfigKey.FogUiScale, isChineseLanguage), new AcceptableValueRange<float>(MinFogUiScale, MaxFogUiScale), Array.Empty<object>()));
+		ModEnabled = Config.Bind(sectionName, GetKeyName(ConfigKey.ModEnabled, isChineseLanguage), true, CreateConfigDescription(ConfigKey.ModEnabled, isChineseLanguage));
+		FogSpeed = Config.Bind(sectionName, GetKeyName(ConfigKey.FogSpeed, isChineseLanguage), DefaultFogSpeed, CreateConfigDescription(ConfigKey.FogSpeed, isChineseLanguage));
+		FogDelay = Config.Bind(sectionName, GetKeyName(ConfigKey.FogDelay, isChineseLanguage), DefaultFogDelaySeconds, CreateConfigDescription(ConfigKey.FogDelay, isChineseLanguage));
+		CompassHotkey = Config.Bind(sectionName, GetKeyName(ConfigKey.CompassHotkey, isChineseLanguage), KeyCode.G, CreateConfigDescription(ConfigKey.CompassHotkey, isChineseLanguage));
+		FogUiEnabled = Config.Bind(sectionName, GetKeyName(ConfigKey.FogUiEnabled, isChineseLanguage), true, CreateConfigDescription(ConfigKey.FogUiEnabled, isChineseLanguage));
+		FogUiX = Config.Bind(sectionName, GetKeyName(ConfigKey.FogUiX, isChineseLanguage), DefaultFogUiX, CreateConfigDescription(ConfigKey.FogUiX, isChineseLanguage));
+		FogUiY = Config.Bind(sectionName, GetKeyName(ConfigKey.FogUiY, isChineseLanguage), DefaultFogUiY, CreateConfigDescription(ConfigKey.FogUiY, isChineseLanguage));
+		FogUiScale = Config.Bind(sectionName, GetKeyName(ConfigKey.FogUiScale, isChineseLanguage), DefaultFogUiScale, CreateConfigDescription(ConfigKey.FogUiScale, isChineseLanguage));
 		MigrateLocalizedConfigEntries();
 		ClampConfigValues();
 	}
 
-	private ConfigDescription GetConfigDescription(ConfigKey configKey, bool isChineseLanguage)
+	private ConfigDescription CreateConfigDescription(ConfigKey configKey, bool isChineseLanguage)
 	{
-		return new ConfigDescription(GetLocalizedDescription(configKey, isChineseLanguage), null, Array.Empty<object>());
+		return configKey switch
+		{
+			ConfigKey.FogSpeed => new ConfigDescription(GetLocalizedDescription(configKey, isChineseLanguage), new AcceptableValueRange<float>(MinFogSpeed, MaxFogSpeed), Array.Empty<object>()),
+			ConfigKey.FogDelay => new ConfigDescription(GetLocalizedDescription(configKey, isChineseLanguage), new AcceptableValueRange<float>(MinFogDelaySeconds, MaxFogDelaySeconds), Array.Empty<object>()),
+			ConfigKey.FogUiX => new ConfigDescription(GetLocalizedDescription(configKey, isChineseLanguage), new AcceptableValueRange<float>(MinFogUiX, MaxFogUiX), Array.Empty<object>()),
+			ConfigKey.FogUiY => new ConfigDescription(GetLocalizedDescription(configKey, isChineseLanguage), new AcceptableValueRange<float>(MinFogUiY, MaxFogUiY), Array.Empty<object>()),
+			ConfigKey.FogUiScale => new ConfigDescription(GetLocalizedDescription(configKey, isChineseLanguage), new AcceptableValueRange<float>(MinFogUiScale, MaxFogUiScale), Array.Empty<object>()),
+			_ => new ConfigDescription(GetLocalizedDescription(configKey, isChineseLanguage), null, Array.Empty<object>())
+		};
 	}
 
 	private void MigrateLocalizedConfigEntries()
@@ -241,6 +275,7 @@ public sealed class Plugin : BaseUnityPlugin
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(ModEnabled, ConfigKey.ModEnabled, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogSpeed, ConfigKey.FogSpeed, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogDelay, ConfigKey.FogDelay, orphanedEntries);
+		migratedAnyValue |= TryMigrateLocalizedConfigValue(CompassHotkey, ConfigKey.CompassHotkey, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogUiEnabled, ConfigKey.FogUiEnabled, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogUiX, ConfigKey.FogUiX, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogUiY, ConfigKey.FogUiY, orphanedEntries);
@@ -355,7 +390,6 @@ public sealed class Plugin : BaseUnityPlugin
 			{
 				RestoreVanillaFogSpeed();
 				ResetFogRuntimeState();
-				CleanupCampfireBeacon();
 				SetFogUiVisible(false);
 			}
 			else
@@ -363,15 +397,17 @@ public sealed class Plugin : BaseUnityPlugin
 				_fogStateInitialized = false;
 				_lastFogStateSyncTime = -FogStateSyncIntervalSeconds;
 				_lastRemoteStatusSyncTime = -RemoteStatusSyncIntervalSeconds;
-				_lastBeaconRefreshTime = -BeaconRefreshIntervalSeconds;
 				_lastCompassGrantSyncTime = -CompassGrantSyncIntervalSeconds;
 			}
 		}
 		TryResolveRuntimeObjects();
+		HandleLanguageChangeIfNeeded();
 		HandleFogUiConfigChanges();
+		HandleManualCompassHotkey();
 		if (!modEnabled)
 		{
 			UpdateFogUi();
+			UpdateCompassLobbyNotice();
 			return;
 		}
 		if (_orbFogHandler != null && !_fogStateInitialized)
@@ -383,15 +419,11 @@ public sealed class Plugin : BaseUnityPlugin
 			UpdateAuthorityFogMode();
 			SyncFogStateToGuestsIfNeeded();
 			SyncRemoteStatusSuppressionIfNeeded();
-			RefreshCampfireBeaconIfNeeded();
 			SyncCompassGrantsToPlayersIfNeeded();
-		}
-		else if (!HasFogAuthority())
-		{
-			CleanupCampfireBeacon();
 		}
 		ClearLocalAmbientColdStatus();
 		UpdateFogUi();
+		UpdateCompassLobbyNotice();
 	}
 
 	private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
@@ -399,10 +431,9 @@ public sealed class Plugin : BaseUnityPlugin
 		ResetFogRuntimeState();
 		_orbFogHandler = null;
 		_fogSphere = null;
-		_flareBeaconPrefab = null;
 		_compassItem = null;
 		CleanupFogUi();
-		CleanupCampfireBeacon();
+		CleanupCompassLobbyNotice();
 	}
 
 	private void TryResolveRuntimeObjects()
@@ -635,213 +666,15 @@ public sealed class Plugin : BaseUnityPlugin
 		return _fogSphere != null && Mathf.Approximately(_fogSphere.ENABLE, 1f) && Vector3.Distance(_fogSphere.fogPoint, character.Center) > _fogSphere.currentSize;
 	}
 
-	private void RefreshCampfireBeaconIfNeeded()
-	{
-		if (!IsModFeatureEnabled() || !HasFogAuthority())
-		{
-			CleanupCampfireBeacon();
-			return;
-		}
-		float now = Time.unscaledTime;
-		if (now - _lastBeaconRefreshTime < BeaconRefreshIntervalSeconds)
-		{
-			return;
-		}
-		_lastBeaconRefreshTime = now;
-		Campfire targetCampfire = TryGetTargetCampfire();
-		int targetSegment = targetCampfire != null ? (int)MapHandler.CurrentSegmentNumber : -1;
-		bool needsRebuild = targetCampfire == null || targetSegment != _activeBeaconSegment || _campfireBeaconObjects.Count != GetBeaconSpawnCount() || _campfireBeaconObjects.Any(obj => obj == null);
-		if (!needsRebuild)
-		{
-			return;
-		}
-		CleanupCampfireBeacon();
-		if (targetCampfire == null)
-		{
-			return;
-		}
-		TrySpawnCampfireBeacon(targetCampfire, targetSegment);
-	}
-
-	private Campfire TryGetTargetCampfire()
-	{
-		try
-		{
-			if (Singleton<MapHandler>.Instance == null)
-			{
-				return null;
-			}
-			if (Singleton<MapHandler>.Instance.GetCurrentSegment() >= Segment.Peak)
-			{
-				return null;
-			}
-			return MapHandler.CurrentCampfire;
-		}
-		catch
-		{
-			return null;
-		}
-	}
-
-	private void TrySpawnCampfireBeacon(Campfire campfire, int segment)
-	{
-		if (campfire == null)
-		{
-			return;
-		}
-		TryResolveFlareBeaconPrefab();
-		if (_flareBeaconPrefab == null)
-		{
-			return;
-		}
-		Vector3 basePosition = campfire.transform.position + Vector3.up * BeaconBaseHeight;
-		Vector3 right = campfire.transform.right;
-		Vector3 forward = campfire.transform.forward;
-		if (right.sqrMagnitude < 0.01f)
-		{
-			right = Vector3.right;
-		}
-		if (forward.sqrMagnitude < 0.01f)
-		{
-			forward = Vector3.forward;
-		}
-		right.y = 0f;
-		forward.y = 0f;
-		right.Normalize();
-		forward.Normalize();
-		for (int layer = 0; layer < BeaconLayerCount; layer++)
-		{
-			Vector3 layerOrigin = basePosition + Vector3.up * (BeaconSegmentHeight * layer);
-			SpawnBeaconFlareAt(layerOrigin);
-			SpawnBeaconFlareAt(layerOrigin + right * BeaconRingRadius);
-			SpawnBeaconFlareAt(layerOrigin - right * BeaconRingRadius);
-			SpawnBeaconFlareAt(layerOrigin + forward * BeaconRingRadius);
-			SpawnBeaconFlareAt(layerOrigin - forward * BeaconRingRadius);
-		}
-		_activeBeaconSegment = segment;
-	}
-
-	private int GetBeaconSpawnCount()
-	{
-		return BeaconLayerCount * 5;
-	}
-
-	private void SpawnBeaconFlareAt(Vector3 position)
-	{
-		GameObject beacon = SpawnBeaconFlare(position);
-		if (beacon == null)
-		{
-			return;
-		}
-		ConfigureBeaconFlare(beacon, position);
-		_campfireBeaconObjects.Add(beacon);
-	}
-
-	private void TryResolveFlareBeaconPrefab()
-	{
-		if (_flareBeaconPrefab != null)
-		{
-			return;
-		}
-		ItemDatabase database = SingletonAsset<ItemDatabase>.Instance;
-		if (database == null || database.Objects == null)
-		{
-			return;
-		}
-		foreach (Item item in database.Objects)
-		{
-			if (item != null && item.GetComponent<Flare>() != null)
-			{
-				_flareBeaconPrefab = item;
-				return;
-			}
-		}
-	}
-
-	private GameObject SpawnBeaconFlare(Vector3 position)
-	{
-		try
-		{
-			if (PhotonNetwork.InRoom)
-			{
-				return PhotonNetwork.InstantiateItemRoom(_flareBeaconPrefab.name, position, Quaternion.identity);
-			}
-			return UnityEngine.Object.Instantiate(_flareBeaconPrefab.gameObject, position, Quaternion.identity);
-		}
-		catch (Exception ex)
-		{
-			Logger.LogWarning($"[{PluginName}] Failed to spawn beacon flare: {ex.Message}");
-			return null;
-		}
-	}
-
-	private void ConfigureBeaconFlare(GameObject beacon, Vector3 position)
-	{
-		if (beacon == null)
-		{
-			return;
-		}
-		beacon.transform.position = position;
-		beacon.transform.rotation = Quaternion.identity;
-		Item item = beacon.GetComponent<Item>();
-		if (item != null)
-		{
-			if (PhotonNetwork.InRoom && beacon.GetComponent<PhotonView>() != null)
-			{
-				item.SetKinematicNetworked(true, position, Quaternion.identity);
-			}
-			else if (beacon.TryGetComponent<Rigidbody>(out Rigidbody rigidbody))
-			{
-				rigidbody.isKinematic = true;
-				rigidbody.linearVelocity = Vector3.zero;
-				rigidbody.angularVelocity = Vector3.zero;
-			}
-		}
-		Flare flare = beacon.GetComponent<Flare>();
-		if (flare == null)
-		{
-			return;
-		}
-		if (PhotonNetwork.InRoom && beacon.GetComponent<PhotonView>() != null)
-		{
-			flare.LightFlare();
-			return;
-		}
-		flare.SetFlareLitRPC();
-	}
-
-	private void CleanupCampfireBeacon()
-	{
-		bool canDestroyNetworkObjects = PhotonNetwork.InRoom && PhotonNetwork.IsMasterClient;
-		foreach (GameObject beacon in _campfireBeaconObjects)
-		{
-			if (beacon == null)
-			{
-				continue;
-			}
-			try
-			{
-				if (canDestroyNetworkObjects && beacon.GetComponent<PhotonView>() != null)
-				{
-					PhotonNetwork.Destroy(beacon);
-				}
-				else
-				{
-					UnityEngine.Object.Destroy(beacon);
-				}
-			}
-			catch
-			{
-			}
-		}
-		_campfireBeaconObjects.Clear();
-		_activeBeaconSegment = -1;
-	}
-
 	private bool TryResolveCompassItem()
 	{
 		if (_compassItem != null)
 		{
+			return true;
+		}
+		if (TryResolveCompassItemOverride(out Item overriddenCompass))
+		{
+			_compassItem = overriddenCompass;
 			return true;
 		}
 		ItemDatabase database = SingletonAsset<ItemDatabase>.Instance;
@@ -849,6 +682,7 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return false;
 		}
+		List<string> normalCompassCandidates = new List<string>();
 		foreach (Item item in database.Objects)
 		{
 			if (item == null)
@@ -856,13 +690,66 @@ public sealed class Plugin : BaseUnityPlugin
 				continue;
 			}
 			CompassPointer compassPointer = item.GetComponentInChildren<CompassPointer>(true);
-			if (compassPointer != null && compassPointer.compassType == CompassPointer.CompassType.Normal)
+			if (compassPointer == null)
 			{
-				_compassItem = item;
-				return true;
+				continue;
 			}
+			if (compassPointer.compassType != CompassPointer.CompassType.Normal)
+			{
+				continue;
+			}
+			normalCompassCandidates.Add(DescribeCompassItem(item));
+			if (!LooksLikeStandardCompassItem(item))
+			{
+				continue;
+			}
+			_compassItem = item;
+			Logger.LogInfo($"[{PluginName}] Using normal compass item: {DescribeCompassItem(item)}");
+			return true;
+		}
+		if (normalCompassCandidates.Count > 0)
+		{
+			Logger.LogWarning($"[{PluginName}] Failed to identify the standard compass automatically. Set CompassItemIdOverride manually. Candidates: {string.Join(", ", normalCompassCandidates)}");
 		}
 		return false;
+	}
+
+	private bool TryResolveCompassItemOverride(out Item item)
+	{
+		item = null;
+		if (CompassItemIdOverride <= 0)
+		{
+			return false;
+		}
+		if (!ItemDatabase.TryGetItem(CompassItemIdOverride, out Item resolvedItem) || resolvedItem == null)
+		{
+			Logger.LogWarning($"[{PluginName}] CompassItemIdOverride={CompassItemIdOverride} is invalid.");
+			return false;
+		}
+		item = resolvedItem;
+		Logger.LogInfo($"[{PluginName}] Using compass item override: {DescribeCompassItem(item)}");
+		return true;
+	}
+
+	private static bool LooksLikeStandardCompassItem(Item item)
+	{
+		if (item == null)
+		{
+			return false;
+		}
+		string prefabName = item.name ?? string.Empty;
+		string uiName = item.UIData?.itemName ?? string.Empty;
+		return prefabName.IndexOf(CompassNameKeyword, StringComparison.OrdinalIgnoreCase) >= 0 || uiName.IndexOf(CompassNameKeyword, StringComparison.OrdinalIgnoreCase) >= 0;
+	}
+
+	private static string DescribeCompassItem(Item item)
+	{
+		if (item == null)
+		{
+			return "<null>";
+		}
+		string uiName = item.UIData?.itemName ?? string.Empty;
+		return $"{item.name} (itemID={item.itemID}, uiName={uiName})";
 	}
 
 	private IEnumerable<Player> EnumerateTargetPlayers()
@@ -968,12 +855,65 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return false;
 		}
+		if (ShouldSpawnCompassAboveHead(player))
+		{
+			return DropCompassAbovePlayerHead(player, reason);
+		}
 		if (player.AddItem(_compassItem.itemID, null, out _))
 		{
 			Logger.LogDebug($"[{PluginName}] Granted compass to {player.name} ({reason}).");
 			return true;
 		}
-		return DropCompassNearPlayer(player, reason);
+		return DropCompassAbovePlayerHead(player, reason) || DropCompassNearPlayer(player, reason);
+	}
+
+	private static bool ShouldSpawnCompassAboveHead(Player player)
+	{
+		if (player == null)
+		{
+			return false;
+		}
+		Character character = player.character;
+		if (character?.data != null && (character.data.currentItem != null || character.data.isClimbingAnything))
+		{
+			return true;
+		}
+		for (int i = 0; i < player.itemSlots.Length; i++)
+		{
+			ItemSlot itemSlot = player.itemSlots[i];
+			if (itemSlot != null && itemSlot.IsEmpty())
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private bool DropCompassAbovePlayerHead(Player player, string reason)
+	{
+		if (player == null || _compassItem == null)
+		{
+			return false;
+		}
+		Vector3 spawnPosition = GetCompassAboveHeadPosition(player);
+		try
+		{
+			if (PhotonNetwork.InRoom)
+			{
+				PhotonNetwork.InstantiateItemRoom(_compassItem.name, spawnPosition, Quaternion.identity);
+			}
+			else
+			{
+				UnityEngine.Object.Instantiate(_compassItem.gameObject, spawnPosition, Quaternion.identity);
+			}
+			Logger.LogDebug($"[{PluginName}] Spawned compass above {player.name} ({reason}) to avoid occupying the held-item slot while climbing.");
+			return true;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogWarning($"[{PluginName}] Failed to spawn compass above {player.name} ({reason}): {ex.Message}");
+			return false;
+		}
 	}
 
 	private bool DropCompassNearPlayer(Player player, string reason)
@@ -1015,6 +955,65 @@ public sealed class Plugin : BaseUnityPlugin
 		return origin + Vector3.up * 0.5f + forward.normalized * 1.1f;
 	}
 
+	private static Vector3 GetCompassAboveHeadPosition(Player player)
+	{
+		Character character = player.character;
+		Vector3 headPosition = character != null ? character.Head : player.transform.position + Vector3.up * 1.6f;
+		Vector3 awayFromWall = character != null ? -character.transform.forward : Vector3.forward;
+		if (awayFromWall.sqrMagnitude < 0.01f)
+		{
+			awayFromWall = Vector3.forward;
+		}
+		return headPosition + Vector3.up * 0.45f + awayFromWall.normalized * 0.35f;
+	}
+
+	private void HandleManualCompassHotkey()
+	{
+		if (!IsModFeatureEnabled() || !HasFogAuthority())
+		{
+			return;
+		}
+		KeyCode hotkey = GetCompassHotkey();
+		if (hotkey == KeyCode.None)
+		{
+			return;
+		}
+		GUIManager instance = GUIManager.instance;
+		if (instance != null && instance.windowBlockingInput)
+		{
+			return;
+		}
+		if (!Input.GetKeyDown(hotkey))
+		{
+			return;
+		}
+		TrySpawnManualCompassForLocalPlayer();
+	}
+
+	private void TrySpawnManualCompassForLocalPlayer()
+	{
+		if (!TryResolveCompassItem())
+		{
+			Logger.LogWarning($"[{PluginName}] Failed to resolve compass item for manual hotkey spawn.");
+			return;
+		}
+		if (!TryGetLocalPlayablePlayer(out Player localPlayer))
+		{
+			return;
+		}
+		if (!DropCompassAbovePlayerHead(localPlayer, "manual-hotkey"))
+		{
+			Logger.LogWarning($"[{PluginName}] Manual compass hotkey spawn failed for {localPlayer.name}.");
+		}
+	}
+
+	private static bool TryGetLocalPlayablePlayer(out Player localPlayer)
+	{
+		localPlayer = Player.localPlayer ?? Character.localCharacter?.player;
+		Character character = localPlayer?.character ?? Character.localCharacter;
+		return localPlayer != null && character != null && !character.isBot && !character.isZombie;
+	}
+
 	private void HandleFogUiConfigChanges()
 	{
 		bool fogUiEnabled = FogUiEnabled?.Value ?? true;
@@ -1032,16 +1031,420 @@ public sealed class Plugin : BaseUnityPlugin
 		CreateFogUi();
 	}
 
-	private bool ShouldShowFogUi()
+	private void HandleLanguageChangeIfNeeded()
 	{
-		return IsModFeatureEnabled() && (FogUiEnabled?.Value ?? true) && ResolveHudCanvas() != null;
+		bool isChineseLanguage = DetectChineseLanguage();
+		if (isChineseLanguage != _lastDetectedChineseLanguage)
+		{
+			ReinitializeLocalizedConfig(isChineseLanguage);
+		}
+		TryLocalizeVisibleModConfigUi();
+	}
+
+	private void ReinitializeLocalizedConfig(bool isChineseLanguage)
+	{
+		if (_isRefreshingLanguage)
+		{
+			return;
+		}
+		_isRefreshingLanguage = true;
+		try
+		{
+			_lastDetectedChineseLanguage = isChineseLanguage;
+			ApplyLocalizedConfigMetadata(isChineseLanguage);
+			if (_fogUiText != null)
+			{
+				ApplyGameTextStyle(_fogUiText, Color.white);
+			}
+			if (_compassLobbyNoticeText != null)
+			{
+				ApplyCompassLobbyNoticeStyle(_compassLobbyNoticeText);
+			}
+			TryLocalizeVisibleModConfigUi();
+			UpdateFogUi();
+			UpdateCompassLobbyNotice();
+		}
+		catch (Exception ex)
+		{
+			Logger.LogWarning($"[{PluginName}] Failed to reinitialize localized config: {ex.Message}");
+		}
+		finally
+		{
+			_isRefreshingLanguage = false;
+		}
+	}
+
+	private void ApplyLocalizedConfigMetadata(bool isChineseLanguage)
+	{
+		try
+		{
+			foreach (ConfigEntryBase entry in GetConfigEntriesSnapshot(Config))
+			{
+				if (entry?.Definition == null || entry.Description == null || !TryGetConfigKey(entry.Definition.Key, out ConfigKey configKey))
+				{
+					continue;
+				}
+				string localizedDescription = GetLocalizedDescription(configKey, isChineseLanguage);
+				if (!string.IsNullOrWhiteSpace(localizedDescription))
+				{
+					SetPrivateField(entry.Description, "<Description>k__BackingField", localizedDescription);
+				}
+			}
+		}
+		catch (Exception ex)
+		{
+			Logger.LogWarning($"[{PluginName}] Failed to apply localized config metadata: {ex.Message}");
+		}
+	}
+
+	private static ConfigEntryBase[] GetConfigEntriesSnapshot(ConfigFile configFile)
+	{
+		if (configFile == null)
+		{
+			return Array.Empty<ConfigEntryBase>();
+		}
+		if (!(ConfigFileEntriesProperty?.GetValue(configFile) is IDictionary dictionary) || dictionary.Count == 0)
+		{
+			return Array.Empty<ConfigEntryBase>();
+		}
+		return dictionary.Values.Cast<object>().OfType<ConfigEntryBase>().Where(entry => entry != null).ToArray();
+	}
+
+	private static void SetPrivateField(object target, string fieldName, object value)
+	{
+		if (target == null || string.IsNullOrWhiteSpace(fieldName))
+		{
+			return;
+		}
+		target.GetType().GetField(fieldName, InstanceBindingFlags)?.SetValue(target, value);
+	}
+
+	private static bool TryGetConfigKey(string keyName, out ConfigKey configKey)
+	{
+		foreach (ConfigKey candidate in Enum.GetValues(typeof(ConfigKey)))
+		{
+			if (string.Equals(keyName, GetKeyName(candidate, isChineseLanguage: false), StringComparison.OrdinalIgnoreCase) || string.Equals(keyName, GetKeyName(candidate, isChineseLanguage: true), StringComparison.OrdinalIgnoreCase))
+			{
+				configKey = candidate;
+				return true;
+			}
+		}
+		configKey = default;
+		return false;
+	}
+
+	private void TryLocalizeVisibleModConfigUi()
+	{
+		if (!TryGetModConfigMenuInstance(out Type menuType, out object menuInstance))
+		{
+			return;
+		}
+		if (!(menuInstance is Behaviour behaviour) || behaviour == null)
+		{
+			return;
+		}
+		try
+		{
+			if (!behaviour.isActiveAndEnabled || !behaviour.gameObject.activeInHierarchy)
+			{
+				return;
+			}
+		}
+		catch
+		{
+			return;
+		}
+		Dictionary<string, string> map = BuildModConfigUiLocalizationMap(DetectChineseLanguage());
+		foreach (Transform root in EnumerateModConfigUiRoots(menuInstance, menuType))
+		{
+			ApplyTextLocalizationToRoot(root, map);
+		}
+	}
+
+	private static bool TryGetModConfigMenuInstance(out Type menuType, out object menuInstance)
+	{
+		menuType = null;
+		menuInstance = null;
+		if (!Chainloader.PluginInfos.TryGetValue(ModConfigPluginGuid, out PluginInfo pluginInfo) || pluginInfo?.Instance == null)
+		{
+			return false;
+		}
+		Assembly assembly = pluginInfo.Instance.GetType().Assembly;
+		menuType = assembly.GetType("PEAKLib.ModConfig.Components.ModdedSettingsMenu");
+		menuInstance = menuType?.GetProperty("Instance", StaticBindingFlags)?.GetValue(null);
+		return menuType != null && menuInstance != null;
+	}
+
+	private IEnumerable<Transform> EnumerateModConfigUiRoots(object menuInstance, Type menuType)
+	{
+		HashSet<int> visited = new HashSet<int>();
+		foreach (Transform root in EnumerateCandidateTransforms(menuInstance, menuType))
+		{
+			if (root != null && visited.Add(root.GetInstanceID()))
+			{
+				yield return root;
+			}
+		}
+	}
+
+	private static IEnumerable<Transform> EnumerateCandidateTransforms(object menuInstance, Type menuType)
+	{
+		if (menuInstance is Component component)
+		{
+			yield return component.transform;
+		}
+		object contentObject = menuType?.GetProperty("Content", InstanceBindingFlags)?.GetValue(menuInstance);
+		if (contentObject is Transform content)
+		{
+			yield return content;
+		}
+	}
+
+	private void ApplyTextLocalizationToRoot(Transform root, Dictionary<string, string> map)
+	{
+		if (root == null || map == null || map.Count == 0)
+		{
+			return;
+		}
+		foreach (TMP_Text text in root.GetComponentsInChildren<TMP_Text>(true))
+		{
+			if (text == null)
+			{
+				continue;
+			}
+			string trimmed = text.text?.Trim();
+			if (string.IsNullOrWhiteSpace(trimmed))
+			{
+				continue;
+			}
+			if (map.TryGetValue(trimmed, out string localized) && !string.Equals(text.text, localized, StringComparison.Ordinal))
+			{
+				text.text = localized;
+			}
+		}
+	}
+
+	private Dictionary<string, string> BuildModConfigUiLocalizationMap(bool isChineseLanguage)
+	{
+		Dictionary<string, string> map = new Dictionary<string, string>(StringComparer.Ordinal);
+		AddUiLocalizationPair(map, "Fog Climb", GetLocalizedModDisplayName(isChineseLanguage));
+		AddUiLocalizationPair(map, "FogClimb", GetLocalizedModDisplayName(isChineseLanguage));
+		AddUiLocalizationPair(map, "毒雾攀登", GetLocalizedModDisplayName(isChineseLanguage));
+		AddUiLocalizationPair(map, GetSectionName(isChineseLanguage: false), GetSectionName(isChineseLanguage));
+		AddUiLocalizationPair(map, GetSectionName(isChineseLanguage: true), GetSectionName(isChineseLanguage));
+		foreach (ConfigKey configKey in Enum.GetValues(typeof(ConfigKey)))
+		{
+			AddUiLocalizationPair(map, GetKeyName(configKey, isChineseLanguage: false), GetKeyName(configKey, isChineseLanguage));
+			AddUiLocalizationPair(map, GetKeyName(configKey, isChineseLanguage: true), GetKeyName(configKey, isChineseLanguage));
+			AddUiLocalizationPair(map, GetLocalizedDescription(configKey, isChineseLanguage: false), GetLocalizedDescription(configKey, isChineseLanguage));
+			AddUiLocalizationPair(map, GetLocalizedDescription(configKey, isChineseLanguage: true), GetLocalizedDescription(configKey, isChineseLanguage));
+		}
+		return map;
+	}
+
+	private static void AddUiLocalizationPair(Dictionary<string, string> map, string source, string localized)
+	{
+		if (map == null || string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(localized))
+		{
+			return;
+		}
+		string sourceTrimmed = source.Trim();
+		string localizedTrimmed = localized.Trim();
+		map[sourceTrimmed] = localizedTrimmed;
+		map[localizedTrimmed] = localizedTrimmed;
+		string sourceCompact = sourceTrimmed.Replace(" ", string.Empty);
+		string localizedCompact = localizedTrimmed.Replace(" ", string.Empty);
+		if (!map.ContainsKey(sourceCompact))
+		{
+			map[sourceCompact] = localizedTrimmed;
+		}
+		if (!map.ContainsKey(localizedCompact))
+		{
+			map[localizedCompact] = localizedTrimmed;
+		}
+		map[sourceTrimmed.ToUpperInvariant()] = localizedTrimmed;
+		map[localizedTrimmed.ToUpperInvariant()] = localizedTrimmed;
+	}
+
+	private static KeyCode GetCompassHotkey()
+	{
+		return CompassHotkey?.Value ?? KeyCode.G;
+	}
+
+	private static string GetCompassHotkeyLabel()
+	{
+		KeyCode hotkey = GetCompassHotkey();
+		string keyText = hotkey.ToString();
+		if (string.IsNullOrWhiteSpace(keyText) || hotkey == KeyCode.None)
+		{
+			return "G";
+		}
+		return keyText.ToUpperInvariant();
+	}
+
+	private string GetCompassLobbyNoticeText(bool isChineseLanguage)
+	{
+		string keyText = $"<color={CompassLobbyNoticeKeyColor}>{GetCompassHotkeyLabel()}</color>";
+		return isChineseLanguage ? $"按 {keyText} 生成指南针" : $"Press {keyText} to spawn compass";
+	}
+
+	private bool ShouldShowCompassLobbyNotice()
+	{
+		return IsModFeatureEnabled() && HasFogAuthority() && GetCompassHotkey() != KeyCode.None && IsAirportScene(SceneManager.GetActiveScene());
+	}
+
+	private void UpdateCompassLobbyNotice()
+	{
+		if (!ShouldShowCompassLobbyNotice())
+		{
+			CleanupCompassLobbyNotice();
+			return;
+		}
+		Canvas targetCanvas = ResolveHudCanvas();
+		if (!IsCanvasUsable(targetCanvas))
+		{
+			CleanupCompassLobbyNotice();
+			return;
+		}
+		if (_compassLobbyNoticeRect == null || _compassLobbyNoticeText == null || _compassLobbyNoticeRect.parent != targetCanvas.transform)
+		{
+			CreateCompassLobbyNotice(targetCanvas);
+			if (_compassLobbyNoticeRect == null || _compassLobbyNoticeText == null)
+			{
+				return;
+			}
+		}
+		string noticeText = GetCompassLobbyNoticeText(DetectChineseLanguage());
+		if (!string.Equals(_lastCompassLobbyNoticeText, noticeText, StringComparison.Ordinal))
+		{
+			_lastCompassLobbyNoticeText = noticeText;
+			_compassLobbyNoticeText.text = noticeText;
+		}
+		ClampCompassLobbyNoticeToCanvas(targetCanvas);
+		_compassLobbyNoticeRect.gameObject.SetActive(true);
+	}
+
+	private void CreateCompassLobbyNotice(Canvas targetCanvas = null)
+	{
+		CleanupCompassLobbyNotice();
+		Canvas canvas = targetCanvas ?? ResolveHudCanvas();
+		if (!IsCanvasUsable(canvas))
+		{
+			return;
+		}
+		GameObject noticeObject = new GameObject("FogClimbCompassLobbyNotice");
+		noticeObject.transform.SetParent(canvas.transform, false);
+		noticeObject.transform.SetAsLastSibling();
+		_compassLobbyNoticeRect = noticeObject.AddComponent<RectTransform>();
+		_compassLobbyNoticeRect.sizeDelta = new Vector2(CompassLobbyNoticeWidth, CompassLobbyNoticeHeight);
+		_compassLobbyNoticeText = noticeObject.AddComponent<TextMeshProUGUI>();
+		ApplyCompassLobbyNoticeStyle(_compassLobbyNoticeText);
+		_lastCompassLobbyNoticeText = GetCompassLobbyNoticeText(DetectChineseLanguage());
+		_compassLobbyNoticeText.text = _lastCompassLobbyNoticeText;
+		ClampCompassLobbyNoticeToCanvas(canvas);
+	}
+
+	private void ApplyCompassLobbyNoticeStyle(TextMeshProUGUI target)
+	{
+		if (target == null)
+		{
+			return;
+		}
+		ApplyGameTextStyle(target, new Color(1f, 0.94f, 0.72f), CompassLobbyNoticeFontSizeMultiplier);
+		target.fontStyle = FontStyles.Normal;
+		target.alignment = TextAlignmentOptions.MidlineRight;
+		target.textWrappingMode = TextWrappingModes.NoWrap;
+		target.overflowMode = TextOverflowModes.Overflow;
+		target.lineSpacing = CompassLobbyNoticeLineSpacing;
+	}
+
+	private void ClampCompassLobbyNoticeToCanvas(Canvas targetCanvas = null)
+	{
+		if (_compassLobbyNoticeRect == null)
+		{
+			return;
+		}
+		Canvas canvas = targetCanvas ?? ResolveHudCanvas() ?? _compassLobbyNoticeRect.GetComponentInParent<Canvas>();
+		if (!IsCanvasUsable(canvas))
+		{
+			return;
+		}
+		if (_compassLobbyNoticeRect.parent != canvas.transform)
+		{
+			_compassLobbyNoticeRect.SetParent(canvas.transform, false);
+		}
+		ApplyRightMiddleAnchoredRect(_compassLobbyNoticeRect, CompassLobbyNoticeWidth, CompassLobbyNoticeHeight, CompassLobbyNoticeRightOffset, CompassLobbyNoticeDownOffset);
+	}
+
+	private void CleanupCompassLobbyNotice()
+	{
+		if (_compassLobbyNoticeRect != null)
+		{
+			UnityEngine.Object.Destroy(_compassLobbyNoticeRect.gameObject);
+		}
+		_compassLobbyNoticeRect = null;
+		_compassLobbyNoticeText = null;
+		_lastCompassLobbyNoticeText = string.Empty;
+	}
+
+	private bool ShouldShowFogUi(Canvas targetCanvas = null)
+	{
+		if (!IsModFeatureEnabled() || !(FogUiEnabled?.Value ?? true))
+		{
+			return false;
+		}
+		if (LoadingScreenHandler.loading || IsFogUiBlockedByOverlay() || !IsFogUiSceneAllowed())
+		{
+			return false;
+		}
+		Canvas canvas = targetCanvas ?? ResolveHudCanvas();
+		return IsCanvasUsable(canvas);
+	}
+
+	private static bool IsFogUiBlockedByOverlay()
+	{
+		GUIManager instance = GUIManager.instance;
+		return instance != null && instance.endScreen != null && instance.endScreen.isOpen;
+	}
+
+	private static bool IsFogUiSceneAllowed()
+	{
+		Scene activeScene = SceneManager.GetActiveScene();
+		if (!activeScene.IsValid())
+		{
+			return GameHandler.IsOnIsland;
+		}
+		return IsAirportScene(activeScene) || IsGameplayFogScene(activeScene);
+	}
+
+	private static bool IsAirportScene(Scene scene)
+	{
+		return string.Equals(scene.name, "Airport", StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static bool IsGameplayFogScene(Scene scene)
+	{
+		string sceneName = scene.name ?? string.Empty;
+		if (sceneName.IndexOf("Island", StringComparison.OrdinalIgnoreCase) >= 0 || sceneName.IndexOf("Level_", StringComparison.OrdinalIgnoreCase) >= 0)
+		{
+			return true;
+		}
+		return GameHandler.IsOnIsland;
 	}
 
 	private Canvas ResolveHudCanvas()
 	{
+		if (!IsFogUiSceneAllowed())
+		{
+			return null;
+		}
 		GUIManager instance = GUIManager.instance;
 		if (instance != null)
 		{
+			if (IsCanvasUsable(instance.hudCanvas))
+			{
+				return instance.hudCanvas;
+			}
 			TextMeshProUGUI source = instance.itemPromptMain != null ? instance.itemPromptMain : instance.interactNameText;
 			if (source != null)
 			{
@@ -1074,22 +1477,114 @@ public sealed class Plugin : BaseUnityPlugin
 		return bestCanvas;
 	}
 
+	private static bool IsCanvasUsable(Canvas canvas)
+	{
+		return canvas != null && canvas.isRootCanvas && canvas.isActiveAndEnabled && canvas.gameObject.activeInHierarchy && canvas.renderMode != RenderMode.WorldSpace;
+	}
+
+	private bool NeedsFogUiRebuild(Canvas targetCanvas)
+	{
+		if (_fogUiRect == null || _fogUiText == null || !IsCanvasUsable(targetCanvas))
+		{
+			return true;
+		}
+		Canvas currentCanvas = _fogUiRect.GetComponentInParent<Canvas>();
+		return !IsCanvasUsable(currentCanvas) || _fogUiRect.parent != targetCanvas.transform;
+	}
+
 	private TextMeshProUGUI ResolveFogStyleSource()
 	{
+		bool isChineseLanguage = DetectChineseLanguage();
 		GUIManager instance = GUIManager.instance;
-		if (instance == null)
+		if (instance != null)
 		{
-			return null;
+			TextMeshProUGUI[] candidates = new TextMeshProUGUI[3] { instance.itemPromptMain, instance.interactNameText, instance.interactPromptText };
+			foreach (TextMeshProUGUI candidate in candidates)
+			{
+				if (IsTextSourceSuitable(candidate, isChineseLanguage))
+				{
+					return candidate;
+				}
+			}
+			foreach (TextMeshProUGUI candidate2 in candidates)
+			{
+				if (candidate2 != null)
+				{
+					return candidate2;
+				}
+			}
 		}
-		if (instance.itemPromptMain != null)
+		TextMeshProUGUI localizedSource = FindLocalizedTextSource(isChineseLanguage);
+		if (localizedSource != null)
 		{
-			return instance.itemPromptMain;
+			return localizedSource;
 		}
-		if (instance.interactNameText != null)
+		return null;
+	}
+
+	private static TextMeshProUGUI FindLocalizedTextSource(bool isChineseLanguage)
+	{
+		TextMeshProUGUI bestSource = null;
+		int bestScore = int.MinValue;
+		TextMeshProUGUI[] texts = UnityEngine.Object.FindObjectsByType<TextMeshProUGUI>(FindObjectsSortMode.None);
+		foreach (TextMeshProUGUI text in texts)
 		{
-			return instance.interactNameText;
+			if (text == null || text.font == null || !text.isActiveAndEnabled || !text.gameObject.activeInHierarchy)
+			{
+				continue;
+			}
+			int score = 0;
+			if (ContainsLocalizedCharacters(text.text, isChineseLanguage))
+			{
+				score += 100;
+			}
+			if (text.GetComponentInParent<Canvas>() != null)
+			{
+				score += 20;
+			}
+			if (text.fontSharedMaterial != null)
+			{
+				score += 5;
+			}
+			if (score > bestScore)
+			{
+				bestScore = score;
+				bestSource = text;
+			}
 		}
-		return instance.interactPromptText;
+		return bestScore > 0 ? bestSource : null;
+	}
+
+	private static bool IsTextSourceSuitable(TextMeshProUGUI source, bool isChineseLanguage)
+	{
+		if (source == null || source.font == null)
+		{
+			return false;
+		}
+		return !isChineseLanguage || ContainsLocalizedCharacters(source.text, isChineseLanguage: true);
+	}
+
+	private static bool ContainsLocalizedCharacters(string value, bool isChineseLanguage)
+	{
+		if (string.IsNullOrEmpty(value))
+		{
+			return false;
+		}
+		foreach (char character in value)
+		{
+			if (isChineseLanguage)
+			{
+				if (character >= '\u3400' && character <= '\u9fff')
+				{
+					return true;
+				}
+			}
+			else if (character <= sbyte.MaxValue && char.IsLetter(character))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private void ApplyGameTextStyle(TextMeshProUGUI target, Color color, float sizeMultiplier = 1f)
@@ -1118,20 +1613,16 @@ public sealed class Plugin : BaseUnityPlugin
 		target.alignment = TextAlignmentOptions.BottomLeft;
 	}
 
-	private void CreateFogUi()
+	private void CreateFogUi(Canvas targetCanvas = null)
 	{
 		CleanupFogUi();
-		if (!ShouldShowFogUi())
+		Canvas canvas = targetCanvas ?? ResolveHudCanvas();
+		if (!ShouldShowFogUi(canvas))
 		{
 			return;
 		}
 		try
 		{
-			Canvas canvas = ResolveHudCanvas();
-			if (canvas == null)
-			{
-				return;
-			}
 			GameObject container = new GameObject("FogClimbUI");
 			container.transform.SetParent(canvas.transform, false);
 			_fogUiRect = container.AddComponent<RectTransform>();
@@ -1150,8 +1641,8 @@ public sealed class Plugin : BaseUnityPlugin
 			labelRect.sizeDelta = new Vector2(FogUiWidth, FogUiHeight);
 			_fogUiText = labelObject.AddComponent<TextMeshProUGUI>();
 			ApplyGameTextStyle(_fogUiText, Color.white);
-			_fogUiText.text = FogUiTitle;
-			ClampFogUiToCanvas();
+			_fogUiText.text = string.Empty;
+			ClampFogUiToCanvas(canvas);
 			SetFogUiVisible(true);
 		}
 		catch
@@ -1167,23 +1658,23 @@ public sealed class Plugin : BaseUnityPlugin
 			SetFogUiVisible(false);
 			return;
 		}
-		if (!ShouldShowFogUi())
+		Canvas targetCanvas = ResolveHudCanvas();
+		if (!ShouldShowFogUi(targetCanvas))
 		{
 			SetFogUiVisible(false);
 			return;
 		}
-		if (_fogUiRect == null || _fogUiText == null)
+		if (NeedsFogUiRebuild(targetCanvas))
 		{
-			CreateFogUi();
+			CreateFogUi(targetCanvas);
 			if (_fogUiRect == null || _fogUiText == null)
 			{
 				return;
 			}
 		}
 		SetFogUiVisible(true);
-		ClampFogUiToCanvas();
+		ClampFogUiToCanvas(targetCanvas);
 		bool isChinese = DetectChineseLanguage();
-		string title = FogUiTitle;
 		float speed = _orbFogHandler != null ? _orbFogHandler.speed : (FogSpeed?.Value ?? DefaultFogSpeed);
 		string state = GetFogStateLabel(isChinese);
 		string countdown = GetFogCountdownLabel(isChinese);
@@ -1191,13 +1682,13 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			float configuredDelay = FogDelay?.Value ?? DefaultFogDelaySeconds;
 			_fogUiText.text = isChinese
-				? $"{title}  |  速度: {speed:F2}  |  延迟: {configuredDelay:F0}s  |  状态: {state}"
-				: $"{title}  |  Speed: {speed:F2}  |  Delay: {configuredDelay:F0}s  |  State: {state}";
+				? $"Fog Climb  |  速度: {speed:F2}  |  延迟: {configuredDelay:F0}s  |  状态: {state}"
+				: $"Fog Climb  |  Speed: {speed:F2}  |  Delay: {configuredDelay:F0}s  |  State: {state}";
 			return;
 		}
 		_fogUiText.text = isChinese
-			? $"{title}  |  速度: {speed:F2}  |  状态: {state}{countdown}"
-			: $"{title}  |  Speed: {speed:F2}  |  State: {state}{countdown}";
+			? $"Fog Climb  |  速度: {speed:F2}  |  状态: {state}{countdown}"
+			: $"Fog Climb  |  Speed: {speed:F2}  |  State: {state}{countdown}";
 	}
 
 	private string GetFogStateLabel(bool isChinese)
@@ -1208,7 +1699,16 @@ public sealed class Plugin : BaseUnityPlugin
 		}
 		if (_orbFogHandler == null)
 		{
-			return isChinese ? "大厅" : "LOBBY";
+			Scene activeScene = SceneManager.GetActiveScene();
+			if (IsAirportScene(activeScene))
+			{
+				return isChinese ? "大厅" : "LOBBY";
+			}
+			if (IsGameplayFogScene(activeScene))
+			{
+				return isChinese ? "初始化中" : "SYNCING";
+			}
+			return isChinese ? "未就绪" : "INACTIVE";
 		}
 		if (HasFogAuthority() && !_initialDelayCompleted && _orbFogHandler.currentID == 0)
 		{
@@ -1235,14 +1735,14 @@ public sealed class Plugin : BaseUnityPlugin
 		return isChinese ? $"  |  倒计时: {remaining:F1}s" : $"  |  Starts In: {remaining:F1}s";
 	}
 
-	private void ClampFogUiToCanvas()
+	private void ClampFogUiToCanvas(Canvas targetCanvas = null)
 	{
 		if (_fogUiRect == null)
 		{
 			return;
 		}
-		Canvas canvas = _fogUiRect.GetComponentInParent<Canvas>();
-		if (canvas == null)
+		Canvas canvas = targetCanvas ?? ResolveHudCanvas() ?? _fogUiRect.GetComponentInParent<Canvas>();
+		if (!IsCanvasUsable(canvas))
 		{
 			return;
 		}
@@ -1276,6 +1776,20 @@ public sealed class Plugin : BaseUnityPlugin
 		float clampedX = Mathf.Clamp(x, 0f, Mathf.Max(0f, canvasArea.width - scaledWidth));
 		float clampedY = Mathf.Clamp(y, 0f, Mathf.Max(0f, canvasArea.height - scaledHeight));
 		target.anchoredPosition = new Vector2(clampedX, clampedY);
+	}
+
+	private static void ApplyRightMiddleAnchoredRect(RectTransform target, float width, float height, float rightOffset, float downOffset)
+	{
+		if (target == null)
+		{
+			return;
+		}
+		target.localScale = Vector3.one;
+		target.anchorMin = new Vector2(1f, 0.5f);
+		target.anchorMax = new Vector2(1f, 0.5f);
+		target.pivot = new Vector2(1f, 0.5f);
+		target.sizeDelta = new Vector2(width, height);
+		target.anchoredPosition = new Vector2(0f - rightOffset, 0f - downOffset);
 	}
 
 	private void SetFogUiVisible(bool visible)
@@ -1314,7 +1828,6 @@ public sealed class Plugin : BaseUnityPlugin
 		_fogDelayTimer = 0f;
 		_lastFogStateSyncTime = -FogStateSyncIntervalSeconds;
 		_lastRemoteStatusSyncTime = -RemoteStatusSyncIntervalSeconds;
-		_lastBeaconRefreshTime = -BeaconRefreshIntervalSeconds;
 		_lastCompassGrantSyncTime = -CompassGrantSyncIntervalSeconds;
 		_fogHandlerSearchTimer = 0f;
 		_grantedCampfireCompassIds.Clear();
@@ -1396,6 +1909,11 @@ public sealed class Plugin : BaseUnityPlugin
 		return isChineseLanguage ? "毒雾" : "Fog";
 	}
 
+	private static string GetLocalizedModDisplayName(bool isChineseLanguage)
+	{
+		return isChineseLanguage ? "毒雾攀登" : "Fog Climb";
+	}
+
 	private static string GetKeyName(ConfigKey configKey, bool isChineseLanguage)
 	{
 		return configKey switch
@@ -1403,6 +1921,7 @@ public sealed class Plugin : BaseUnityPlugin
 			ConfigKey.ModEnabled => isChineseLanguage ? "模组开关" : "Enable Mod",
 			ConfigKey.FogSpeed => isChineseLanguage ? "毒雾移动速度" : "Fog Speed",
 			ConfigKey.FogDelay => isChineseLanguage ? "毒雾延迟时间s" : "Fog Delay (s)",
+			ConfigKey.CompassHotkey => isChineseLanguage ? "指南针生成按键" : "Compass Hotkey",
 			ConfigKey.FogUiEnabled => isChineseLanguage ? "UI启用" : "Fog UI",
 			ConfigKey.FogUiX => isChineseLanguage ? "UI X位置" : "UI X Position",
 			ConfigKey.FogUiY => isChineseLanguage ? "UI Y位置" : "UI Y Position",
@@ -1415,10 +1934,11 @@ public sealed class Plugin : BaseUnityPlugin
 	{
 		return configKey switch
 		{
-			ConfigKey.ModEnabled => isChineseLanguage ? "启用独立毒雾模组。仅主机需要安装；主机会同步毒雾进度、冷伤害压制与篝火光柱指示。" : "Enable the standalone fog mod. Only the host needs it; the host synchronizes fog progress, cold suppression, and the campfire beacon.",
+			ConfigKey.ModEnabled => isChineseLanguage ? "启用独立毒雾模组。仅主机需要安装；主机会同步毒雾进度、冷伤害压制与指南针奖励。" : "Enable the standalone fog mod. Only the host needs it; the host synchronizes fog progress, cold suppression, and compass rewards.",
 			ConfigKey.FogSpeed => isChineseLanguage ? "毒雾移动速度，范围 0.3~5，默认 2。" : "Fog movement speed. Range 0.3 to 5, default 2.",
 			ConfigKey.FogDelay => isChineseLanguage ? "首段毒雾开始移动前的延迟，范围 0~150 秒，默认 90 秒。" : "Delay before the first fog segment starts moving. Range 0 to 150 seconds, default 90 seconds.",
-			ConfigKey.FogUiEnabled => isChineseLanguage ? "显示 FogClimb HUD 文本。" : "Show the FogClimb HUD text.",
+			ConfigKey.CompassHotkey => isChineseLanguage ? "按键在自己头顶生成普通指南针；设为 None 可禁用。" : "Spawn a normal compass above your head with a hotkey. Set to None to disable.",
+			ConfigKey.FogUiEnabled => isChineseLanguage ? "显示毒雾 HUD 文本。" : "Show the fog HUD text.",
 			ConfigKey.FogUiX => isChineseLanguage ? "毒雾 HUD 的 X 位置，默认 60。" : "Fog HUD X position. Default 60.",
 			ConfigKey.FogUiY => isChineseLanguage ? "毒雾 HUD 的 Y 位置，默认 16。" : "Fog HUD Y position. Default 16.",
 			ConfigKey.FogUiScale => isChineseLanguage ? "毒雾 HUD 缩放，默认 1.2。" : "Fog HUD scale. Default 1.2.",
@@ -1533,6 +2053,29 @@ public sealed class Plugin : BaseUnityPlugin
 	internal static void NotifyCampfireLit(Campfire campfire)
 	{
 		Instance?.HandleCampfireLit(campfire);
+	}
+
+	private void TryCleanupGeneratedBackupFile()
+	{
+		try
+		{
+			string pluginPath = Info?.Location;
+			if (string.IsNullOrWhiteSpace(pluginPath))
+			{
+				return;
+			}
+			string backupPath = pluginPath + "-unrpcpatched.old";
+			if (!File.Exists(backupPath))
+			{
+				return;
+			}
+			File.Delete(backupPath);
+			Logger.LogInfo($"[{PluginName}] Removed generated backup file: {Path.GetFileName(backupPath)}");
+		}
+		catch (Exception ex)
+		{
+			Logger.LogDebug($"[{PluginName}] Failed to clean generated backup file: {ex.Message}");
+		}
 	}
 
 	private void HandleCampfireLit(Campfire campfire)
