@@ -10,7 +10,7 @@ $dllName = "com.github.Thanks.FogClimb.dll"
 $dllPath = Join-Path $outputRoot $dllName
 $packageRoot = Join-Path $outputRoot "FogClimb-package"
 $pluginsRoot = Join-Path $packageRoot "BepInEx\plugins"
-$packagePath = Join-Path $outputRoot "FogClimb-0.0.6.zip"
+$packagePath = Join-Path $outputRoot "FogClimb-1.0.1.zip"
 
 if (-not (Test-Path $dllPath)) {
     throw "Missing build output: $dllPath"

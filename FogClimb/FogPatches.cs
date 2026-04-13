@@ -1,3 +1,4 @@
+using System;
 using HarmonyLib;
 
 namespace FogClimb;
@@ -14,9 +15,15 @@ internal static class FogMakePlayerColdPatch
 [HarmonyPatch(typeof(FogSphere), "SetSharderVars")]
 internal static class FogSphereSetShaderVarsPatch
 {
-	private static void Postfix()
+	private static void Prefix()
 	{
-		Plugin.ClearLocalFogColdStatus();
+		Plugin.BeginLocalFogStatusSuppression();
+	}
+
+	private static Exception Finalizer(Exception __exception)
+	{
+		Plugin.EndLocalFogStatusSuppression();
+		return __exception;
 	}
 }
 
@@ -29,62 +36,56 @@ internal static class OrbFogHandlerWaitToMovePatch
 	}
 }
 
+[HarmonyPatch(typeof(OrbFogHandler), "Start")]
+internal static class OrbFogHandlerStartPatch
+{
+	private static void Postfix(OrbFogHandler __instance)
+	{
+		Plugin.NotifyFogHandlerChanged(__instance);
+	}
+}
+
+[HarmonyPatch(typeof(OrbFogHandler), "SetFogOrigin")]
+internal static class OrbFogHandlerSetFogOriginPatch
+{
+	private static void Postfix(OrbFogHandler __instance)
+	{
+		Plugin.NotifyFogHandlerChanged(__instance);
+	}
+}
+
+[HarmonyPatch(typeof(OrbFogHandler), "RPC_InitFog")]
+internal static class OrbFogHandlerRpcInitFogPatch
+{
+	private static void Postfix(OrbFogHandler __instance)
+	{
+		Plugin.NotifyFogHandlerChanged(__instance);
+	}
+}
+
+[HarmonyPatch(typeof(Ascents), "get_fogEnabled")]
+internal static class AscentsFogEnabledPatch
+{
+	private static void Postfix(ref bool __result)
+	{
+		if (Plugin.ShouldForceFogCoverageEverywhere())
+		{
+			__result = true;
+		}
+	}
+}
+
 [HarmonyPatch(typeof(CharacterAfflictions), "AddStatus")]
 internal static class CharacterAfflictionsAddStatusPatch
 {
 	private static bool Prefix(CharacterAfflictions __instance, CharacterAfflictions.STATUSTYPE statusType, ref bool __result)
 	{
-		if (Plugin.IsInternalColdClearInProgress() || statusType != CharacterAfflictions.STATUSTYPE.Cold || !Plugin.ShouldSuppressAmbientColdDamageFor(__instance))
+		if (!Plugin.ShouldSuppressLocalFogSourceStatus(__instance, statusType))
 		{
 			return true;
 		}
-		Plugin.EnforceAmbientColdSuppression(__instance);
 		__result = false;
 		return false;
-	}
-}
-
-[HarmonyPatch(typeof(CharacterAfflictions), "SetStatus")]
-internal static class CharacterAfflictionsSetStatusPatch
-{
-	private static void Prefix(CharacterAfflictions __instance, CharacterAfflictions.STATUSTYPE statusType, ref float amount)
-	{
-		if (!Plugin.IsInternalColdClearInProgress() && statusType == CharacterAfflictions.STATUSTYPE.Cold && Plugin.ShouldSuppressAmbientColdDamageFor(__instance))
-		{
-			amount = 0f;
-		}
-	}
-
-	private static void Postfix(CharacterAfflictions __instance, CharacterAfflictions.STATUSTYPE statusType)
-	{
-		if (!Plugin.IsInternalColdClearInProgress() && statusType == CharacterAfflictions.STATUSTYPE.Cold && Plugin.ShouldSuppressAmbientColdDamageFor(__instance))
-		{
-			Plugin.EnforceAmbientColdSuppression(__instance);
-		}
-	}
-}
-
-[HarmonyPatch(typeof(CharacterAfflictions), "ApplyStatusesFromFloatArray")]
-internal static class CharacterAfflictionsApplyStatusesFromFloatArrayPatch
-{
-	private static void Postfix(CharacterAfflictions __instance)
-	{
-		if (Plugin.ShouldSuppressAmbientColdDamageFor(__instance))
-		{
-			Plugin.EnforceAmbientColdSuppression(__instance);
-		}
-	}
-}
-
-[HarmonyPatch(typeof(CharacterAfflictions), "RPC_ApplyStatusesFromFloatArray")]
-internal static class CharacterAfflictionsRpcApplyStatusesFromFloatArrayPatch
-{
-	private static void Postfix(CharacterAfflictions __instance)
-	{
-		if (Plugin.ShouldSuppressAmbientColdDamageFor(__instance))
-		{
-			Plugin.EnforceAmbientColdSuppression(__instance);
-		}
 	}
 }
 

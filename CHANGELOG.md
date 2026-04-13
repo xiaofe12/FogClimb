@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.1
+
+- Added a hidden host-side night test shortcut: hold the internal test key for 5 seconds to force the current run into night for validation.
+- Kept the night test hook out of ModConfig and player-facing UI.
+- Tightened FogClimb's multiplayer behavior so guests stay passive and only the host drives the mode.
+- Reduced unnecessary host-to-guest fog sync traffic by only pushing state updates when the fog snapshot actually changes.
+- Kept host-side cold compensation focused on guests, so rooms no longer depend on guests having FogClimb installed.
+- Repacked the release as `1.0.1`.
+
+## 1.0.0
+
+- Reworked fog-cold handling so FogClimb only suppresses the cold created by the fog itself and no longer removes normal night cold.
+- Replaced the old blanket cold reset with source-based local blocking and safer host-side multiplayer compensation.
+- Improved multiplayer compatibility by advertising FogClimb support between clients, so hosts avoid double-compensating guests who also have the mod installed.
+- Refreshed the package text and release metadata for the `1.0.0` build.
+
 ## 0.0.6
 
 - Added a configurable normal-compass hotkey. Default key: `G`.
@@ -18,14 +34,10 @@
 
 - Added runtime localization refresh so FogClimb can update its ModConfig labels after the game language changes.
 - Improved the fog HUD so it follows the active HUD canvas instead of only appearing in the lobby or right after entering a run.
-- Refreshed the package icon set with five new illustration-style variants focused on climbing, toxic fog, and compass guidance without the campfire beacon.
 
 ## 0.0.3
 
-- Removed the extra `FogClimb` title text from the fog HUD so the panel stays cleaner in both the lobby and during a run.
 - Kept the HUD styling aligned with the game's own font presentation.
-- Refreshed the package artwork for the standalone FogClimb release.
-- Updated package metadata and release output to version `0.0.3`.
 
 ## 0.0.2
 
@@ -35,7 +47,7 @@
 
 ## 0.0.1
 
-- Split the toxic fog mode out of `ShootZombies` and rebuilt it as a standalone `FogClimb` mod.
+- Split the toxic fog mode out of ShootZombies and rebuilt it as a standalone FogClimb mod.
 - Added host-side config for enable/disable, fog speed, fog delay, HUD toggle, HUD position, and HUD scale.
 - Added automatic Chinese or English config labels based on the game's local language.
 - Added host-synced campfire beacon visuals for easier route finding.

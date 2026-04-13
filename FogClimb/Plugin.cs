@@ -24,8 +24,11 @@ public sealed class Plugin : BaseUnityPlugin
 	private enum ConfigKey
 	{
 		ModEnabled,
+		FogColdSuppression,
 		FogSpeed,
 		FogDelay,
+		CalderaFogPosition,
+		KilnFogPosition,
 		CompassHotkey,
 		FogUiEnabled,
 		FogUiX,
@@ -37,7 +40,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	public const string PluginName = "FogClimb";
 
-	public const string PluginVersion = "0.0.6";
+	public const string PluginVersion = "1.0.1";
 
 	private const float DefaultVanillaFogSpeed = 0.3f;
 
@@ -73,15 +76,53 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private const float FogHandlerSearchIntervalSeconds = 1f;
 
-	private const float ColdClearIntervalSeconds = 0.2f;
-
 	private const float FogStateSyncIntervalSeconds = 0.18f;
 
+	private const float FogStateSyncSizeThreshold = 0.35f;
+
 	private const float RemoteStatusSyncIntervalSeconds = 0.25f;
+
+	private const float LateGameRemoteStatusSyncIntervalSeconds = 0.1f;
 
 	private const float CompassGrantSyncIntervalSeconds = 0.75f;
 
 	private const float FogColdPerSecond = 0.0105f;
+
+	private const float StatusChunkSize = 0.025f;
+
+	private const float StalledFogResumeDelayRatio = 0.02f;
+
+	private const float MinStalledFogResumeDelaySeconds = 2f;
+
+	private const float MaxStalledFogResumeDelaySeconds = 8f;
+
+	private const float HiddenFogDelayBufferSeconds = 5f;
+
+	private const float OversizedFogSizeThreshold = 3500f;
+
+	private const float CalderaFogMinStartSize = 1100f;
+
+	private const float CalderaFogMaxStartSize = 2200f;
+
+	private const float CalderaFogMinVerticalOffset = 520f;
+
+	private const float CalderaFogMaxVerticalOffset = 760f;
+
+	private const float CalderaFogVerticalOffsetRatio = 0.4f;
+
+	private const float TheKilnFogMinStartSize = 850f;
+
+	private const float TheKilnFogMaxStartSize = 1800f;
+
+	private const float PeakFogMinStartSize = 650f;
+
+	private const float PeakFogMaxStartSize = 1400f;
+
+	private const KeyCode HiddenNightTestHotkey = KeyCode.F8;
+
+	private const float HiddenNightTestHoldSeconds = 5f;
+
+	private const float FallbackNightTimeNormalized = 0.85f;
 
 	private const float FogUiWidth = 920f;
 
@@ -108,6 +149,8 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private const string ModConfigPluginGuid = "com.github.PEAKModding.PEAKLib.ModConfig";
 
+	private const string NetworkInstallStateKey = "FogClimb.Enabled";
+
 	private const int SimplifiedChineseLanguageIndex = 9;
 
 	private static readonly BindingFlags InstanceBindingFlags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
@@ -118,24 +161,21 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private static readonly PropertyInfo ConfigFileEntriesProperty = typeof(ConfigFile).GetProperty("Entries", InstanceBindingFlags);
 
+	private static readonly FieldInfo OrbFogHandlerOriginsField = typeof(OrbFogHandler).GetField("origins", InstanceBindingFlags);
+
+	private static readonly FieldInfo OrbFogHandlerSphereField = typeof(OrbFogHandler).GetField("sphere", InstanceBindingFlags);
+
 	private static readonly int StatusTypeCount = Enum.GetNames(typeof(CharacterAfflictions.STATUSTYPE)).Length;
 
-	private static readonly string[] ColdStatusArrayFields = new string[5]
-	{
-		"currentStatuses",
-		"currentIncrementalStatuses",
-		"currentDecrementalStatuses",
-		"lastAddedStatus",
-		"lastAddedIncrementalStatus"
-	};
-
-	private static bool _isClearingColdStatus;
+	private static int _localFogStatusSuppressionDepth;
 
 	private Harmony _harmony;
 
 	private OrbFogHandler _orbFogHandler;
 
 	private FogSphere _fogSphere;
+
+	private Fog _legacyFog;
 
 	private bool _fogStateInitialized;
 
@@ -145,15 +185,17 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private float _fogDelayTimer;
 
-	private float _fogHandlerSearchTimer;
+	private float _fogHiddenBufferTimer;
 
-	private float _lastColdClearTime = -ColdClearIntervalSeconds;
+	private float _fogHandlerSearchTimer;
 
 	private float _lastFogStateSyncTime = -FogStateSyncIntervalSeconds;
 
 	private float _lastRemoteStatusSyncTime = -RemoteStatusSyncIntervalSeconds;
 
 	private float _lastCompassGrantSyncTime = -CompassGrantSyncIntervalSeconds;
+
+	private bool _lastHadFogAuthority;
 
 	private bool _lastModEnabledState;
 
@@ -169,9 +211,21 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private float _lastFogUiScale;
 
+	private bool _hasAdvertisedInstallState;
+
+	private bool _lastAdvertisedInstallState;
+
+	private float _hiddenNightTestHoldTimer;
+
+	private bool _hiddenNightTestTriggeredThisHold;
+
 	private readonly HashSet<int> _grantedCampfireCompassIds = new HashSet<int>();
 
+	private readonly HashSet<int> _restoredCheckpointCampfireIds = new HashSet<int>();
+
 	private readonly Dictionary<int, int> _playerCompassGrantCounts = new Dictionary<int, int>();
+
+	private readonly Dictionary<int, float> _remoteFogSuppressionDebt = new Dictionary<int, float>();
 
 	private Item _compassItem;
 
@@ -189,13 +243,39 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private int _totalCompassGrantCount;
 
+	private bool _hasSyncedFogStateSnapshot;
+
+	private int _lastSyncedFogOriginId = -1;
+
+	private float _lastSyncedFogSize = float.NaN;
+
+	private bool _lastSyncedFogIsMoving;
+
+	private bool _lastSyncedFogHasArrived;
+
+	private int _delayedFogOriginId = -1;
+
+	private int _pendingSyntheticFogSegmentId = -1;
+
+	private int _activeSyntheticFogSegmentId = -1;
+
+	private Vector3 _syntheticFogPoint;
+
+	private float _syntheticFogStartSize;
+
 	internal static Plugin Instance { get; private set; }
 
 	internal static ConfigEntry<bool> ModEnabled { get; private set; }
 
+	internal static ConfigEntry<bool> FogColdSuppression { get; private set; }
+
 	internal static ConfigEntry<float> FogSpeed { get; private set; }
 
 	internal static ConfigEntry<float> FogDelay { get; private set; }
+
+	internal static ConfigEntry<bool> CalderaFogPosition { get; private set; }
+
+	internal static ConfigEntry<bool> KilnFogPosition { get; private set; }
 
 	internal static ConfigEntry<KeyCode> CompassHotkey { get; private set; }
 
@@ -210,6 +290,7 @@ public sealed class Plugin : BaseUnityPlugin
 	private void Awake()
 	{
 		Instance = this;
+		_lastHadFogAuthority = HasFogAuthority();
 		TryCleanupGeneratedBackupFile();
 		_lastDetectedChineseLanguage = DetectChineseLanguage();
 		InitializeConfig(_lastDetectedChineseLanguage);
@@ -240,8 +321,11 @@ public sealed class Plugin : BaseUnityPlugin
 	{
 		string sectionName = GetSectionName(isChineseLanguage);
 		ModEnabled = Config.Bind(sectionName, GetKeyName(ConfigKey.ModEnabled, isChineseLanguage), true, CreateConfigDescription(ConfigKey.ModEnabled, isChineseLanguage));
+		FogColdSuppression = Config.Bind(sectionName, GetKeyName(ConfigKey.FogColdSuppression, isChineseLanguage), true, CreateConfigDescription(ConfigKey.FogColdSuppression, isChineseLanguage));
 		FogSpeed = Config.Bind(sectionName, GetKeyName(ConfigKey.FogSpeed, isChineseLanguage), DefaultFogSpeed, CreateConfigDescription(ConfigKey.FogSpeed, isChineseLanguage));
 		FogDelay = Config.Bind(sectionName, GetKeyName(ConfigKey.FogDelay, isChineseLanguage), DefaultFogDelaySeconds, CreateConfigDescription(ConfigKey.FogDelay, isChineseLanguage));
+		CalderaFogPosition = Config.Bind(sectionName, GetKeyName(ConfigKey.CalderaFogPosition, isChineseLanguage), false, CreateConfigDescription(ConfigKey.CalderaFogPosition, isChineseLanguage));
+		KilnFogPosition = Config.Bind(sectionName, GetKeyName(ConfigKey.KilnFogPosition, isChineseLanguage), false, CreateConfigDescription(ConfigKey.KilnFogPosition, isChineseLanguage));
 		CompassHotkey = Config.Bind(sectionName, GetKeyName(ConfigKey.CompassHotkey, isChineseLanguage), KeyCode.G, CreateConfigDescription(ConfigKey.CompassHotkey, isChineseLanguage));
 		FogUiEnabled = Config.Bind(sectionName, GetKeyName(ConfigKey.FogUiEnabled, isChineseLanguage), true, CreateConfigDescription(ConfigKey.FogUiEnabled, isChineseLanguage));
 		FogUiX = Config.Bind(sectionName, GetKeyName(ConfigKey.FogUiX, isChineseLanguage), DefaultFogUiX, CreateConfigDescription(ConfigKey.FogUiX, isChineseLanguage));
@@ -273,8 +357,11 @@ public sealed class Plugin : BaseUnityPlugin
 		}
 		bool migratedAnyValue = false;
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(ModEnabled, ConfigKey.ModEnabled, orphanedEntries);
+		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogColdSuppression, ConfigKey.FogColdSuppression, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogSpeed, ConfigKey.FogSpeed, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogDelay, ConfigKey.FogDelay, orphanedEntries);
+		migratedAnyValue |= TryMigrateLocalizedConfigValue(CalderaFogPosition, ConfigKey.CalderaFogPosition, orphanedEntries);
+		migratedAnyValue |= TryMigrateLocalizedConfigValue(KilnFogPosition, ConfigKey.KilnFogPosition, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(CompassHotkey, ConfigKey.CompassHotkey, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogUiEnabled, ConfigKey.FogUiEnabled, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogUiX, ConfigKey.FogUiX, orphanedEntries);
@@ -383,6 +470,7 @@ public sealed class Plugin : BaseUnityPlugin
 	private void Update()
 	{
 		bool modEnabled = IsModFeatureEnabled();
+		HandleAuthorityChangeIfNeeded(modEnabled);
 		if (modEnabled != _lastModEnabledState)
 		{
 			_lastModEnabledState = modEnabled;
@@ -401,9 +489,15 @@ public sealed class Plugin : BaseUnityPlugin
 			}
 		}
 		TryResolveRuntimeObjects();
+		if (modEnabled)
+		{
+			EnsureFogCoverageAcrossAllLevels();
+		}
+		UpdateLocalInstallStateAdvertisement();
 		HandleLanguageChangeIfNeeded();
 		HandleFogUiConfigChanges();
 		HandleManualCompassHotkey();
+		HandleHiddenNightTestHotkey();
 		if (!modEnabled)
 		{
 			UpdateFogUi();
@@ -416,12 +510,12 @@ public sealed class Plugin : BaseUnityPlugin
 		}
 		if (_orbFogHandler != null && HasFogAuthority())
 		{
+			TryRestoreCheckpointCampfireDelay();
 			UpdateAuthorityFogMode();
 			SyncFogStateToGuestsIfNeeded();
 			SyncRemoteStatusSuppressionIfNeeded();
 			SyncCompassGrantsToPlayersIfNeeded();
 		}
-		ClearLocalAmbientColdStatus();
 		UpdateFogUi();
 		UpdateCompassLobbyNotice();
 	}
@@ -431,6 +525,7 @@ public sealed class Plugin : BaseUnityPlugin
 		ResetFogRuntimeState();
 		_orbFogHandler = null;
 		_fogSphere = null;
+		_legacyFog = null;
 		_compassItem = null;
 		CleanupFogUi();
 		CleanupCompassLobbyNotice();
@@ -440,7 +535,8 @@ public sealed class Plugin : BaseUnityPlugin
 	{
 		bool needFogHandler = _orbFogHandler == null;
 		bool needFogSphere = _fogSphere == null;
-		if (!needFogHandler && !needFogSphere)
+		bool needLegacyFog = _legacyFog == null;
+		if (!needFogHandler && !needFogSphere && !needLegacyFog)
 		{
 			return;
 		}
@@ -462,23 +558,133 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			_fogSphere = UnityEngine.Object.FindAnyObjectByType<FogSphere>();
 		}
+		if (needLegacyFog)
+		{
+			_legacyFog = UnityEngine.Object.FindAnyObjectByType<Fog>();
+		}
+	}
+
+	private void EnsureFogCoverageAcrossAllLevels()
+	{
+		EnsureFogCoverage(_orbFogHandler);
+	}
+
+	private void EnsureFogCoverage(OrbFogHandler fogHandler)
+	{
+		if (!ShouldForceFogCoverageEverywhere() || fogHandler == null)
+		{
+			return;
+		}
+		FogSphereOrigin[] origins = ResolveFogOrigins(fogHandler);
+		for (int i = 0; i < origins.Length; i++)
+		{
+			FogSphereOrigin origin = origins[i];
+			if (origin == null || !origin.disableFog)
+			{
+				continue;
+			}
+			origin.disableFog = false;
+		}
+		FogSphere sphere = ResolveFogSphere(fogHandler);
+		if (sphere == null)
+		{
+			return;
+		}
+		_fogSphere = sphere;
+		if (!sphere.gameObject.activeSelf)
+		{
+			sphere.gameObject.SetActive(true);
+		}
+		if (fogHandler.currentSize > 0f && sphere.currentSize <= 0f)
+		{
+			sphere.currentSize = fogHandler.currentSize;
+		}
+	}
+
+	private static FogSphereOrigin[] ResolveFogOrigins(OrbFogHandler fogHandler)
+	{
+		if (fogHandler == null)
+		{
+			return Array.Empty<FogSphereOrigin>();
+		}
+		FogSphereOrigin[] origins = OrbFogHandlerOriginsField?.GetValue(fogHandler) as FogSphereOrigin[];
+		if (origins != null && origins.Length > 0)
+		{
+			return origins;
+		}
+		origins = fogHandler.GetComponentsInChildren<FogSphereOrigin>(includeInactive: true);
+		if (origins != null && origins.Length > 0)
+		{
+			try
+			{
+				OrbFogHandlerOriginsField?.SetValue(fogHandler, origins);
+			}
+			catch
+			{
+			}
+			return origins;
+		}
+		return Array.Empty<FogSphereOrigin>();
+	}
+
+	private static FogSphere ResolveFogSphere(OrbFogHandler fogHandler)
+	{
+		if (fogHandler == null)
+		{
+			return null;
+		}
+		FogSphere sphere = OrbFogHandlerSphereField?.GetValue(fogHandler) as FogSphere;
+		if (sphere != null)
+		{
+			return sphere;
+		}
+		sphere = fogHandler.GetComponentInChildren<FogSphere>(includeInactive: true);
+		if (sphere != null)
+		{
+			try
+			{
+				OrbFogHandlerSphereField?.SetValue(fogHandler, sphere);
+			}
+			catch
+			{
+			}
+		}
+		return sphere;
 	}
 
 	private void InitializeFogRuntimeState(OrbFogHandler fogHandler)
 	{
 		_fogStateInitialized = true;
 		_trackedFogOriginId = fogHandler != null ? fogHandler.currentID : -1;
-		_fogDelayTimer = 0f;
 		_initialDelayCompleted = ShouldSkipInitialDelay(fogHandler);
+		_fogDelayTimer = _initialDelayCompleted ? (FogDelay?.Value ?? 0f) : 0f;
+		_fogHiddenBufferTimer = _initialDelayCompleted ? HiddenFogDelayBufferSeconds : 0f;
+	}
+
+	private static bool HasAnyConfiguredFogDelay()
+	{
+		return HiddenFogDelayBufferSeconds > 0f || (FogDelay != null && FogDelay.Value > 0f);
 	}
 
 	private bool ShouldSkipInitialDelay(OrbFogHandler fogHandler)
 	{
-		if (fogHandler == null || FogDelay == null || FogDelay.Value <= 0f)
+		if (fogHandler == null || !HasAnyConfiguredFogDelay())
 		{
 			return true;
 		}
-		return fogHandler.currentID > 0 || fogHandler.isMoving || fogHandler.currentWaitTime > 1f;
+		if (IsCampfireDelayPendingForOrigin(fogHandler.currentID))
+		{
+			return false;
+		}
+		if (fogHandler.currentID <= 0)
+		{
+			return fogHandler.isMoving || fogHandler.currentWaitTime > 1f || fogHandler.hasArrived;
+		}
+		if (ShouldHoldFogUntilCampfireActivation(fogHandler))
+		{
+			return false;
+		}
+		return fogHandler.isMoving || fogHandler.currentWaitTime > 1f || fogHandler.hasArrived;
 	}
 
 	private void UpdateAuthorityFogMode()
@@ -488,19 +694,46 @@ public sealed class Plugin : BaseUnityPlugin
 			return;
 		}
 		ClampConfigValues();
+		TryAlignFogOriginToCurrentSegment();
+		TryUpdateSyntheticFogStage();
+		TryNormalizeCalderaFogStage(forceResetCurrentSize: false);
 		UpdateTrackedFogOrigin();
-		if (_trackedFogOriginId != 0)
+		if (ShouldAutoCompleteDelayForCurrentOrigin(_orbFogHandler))
 		{
 			_initialDelayCompleted = true;
 		}
 		if (!_initialDelayCompleted)
 		{
-			_fogDelayTimer += Time.unscaledDeltaTime;
 			_orbFogHandler.speed = 0f;
-			if (_fogDelayTimer >= FogDelay.Value)
+			if (!ShouldEnforceConfiguredDelay(_orbFogHandler))
 			{
-				_fogDelayTimer = FogDelay.Value;
+				return;
+			}
+			if (_fogHiddenBufferTimer < HiddenFogDelayBufferSeconds)
+			{
+				_fogHiddenBufferTimer = Mathf.Min(_fogHiddenBufferTimer + Time.unscaledDeltaTime, HiddenFogDelayBufferSeconds);
+				if (_fogHiddenBufferTimer < HiddenFogDelayBufferSeconds)
+				{
+					return;
+				}
+			}
+			float configuredDelay = FogDelay?.Value ?? 0f;
+			if (configuredDelay <= 0f)
+			{
 				_initialDelayCompleted = true;
+				ClearPendingCampfireDelayForOrigin(_orbFogHandler.currentID);
+				if (!_orbFogHandler.isMoving)
+				{
+					StartFogMovement();
+				}
+				return;
+			}
+			_fogDelayTimer += Time.unscaledDeltaTime;
+			if (_fogDelayTimer >= configuredDelay)
+			{
+				_fogDelayTimer = configuredDelay;
+				_initialDelayCompleted = true;
+				ClearPendingCampfireDelayForOrigin(_orbFogHandler.currentID);
 				if (!_orbFogHandler.isMoving)
 				{
 					StartFogMovement();
@@ -509,7 +742,675 @@ public sealed class Plugin : BaseUnityPlugin
 			return;
 		}
 		_orbFogHandler.speed = FogSpeed.Value;
+		TryAutoStartCustomRunFogIfNeeded();
+		TryAutoResumeStalledFogMovement();
 		TryGrantInitialCompassIfNeeded();
+	}
+
+	private bool IsCampfireDelayPendingForOrigin(int originId)
+	{
+		return originId >= 0 && _delayedFogOriginId == originId;
+	}
+
+	private bool ShouldAutoCompleteDelayForCurrentOrigin(OrbFogHandler fogHandler)
+	{
+		if (fogHandler == null)
+		{
+			return true;
+		}
+		if (fogHandler.currentID == 0)
+		{
+			return false;
+		}
+		if (ShouldHoldFogUntilCampfireActivation(fogHandler))
+		{
+			return false;
+		}
+		return !IsCampfireDelayPendingForOrigin(fogHandler.currentID);
+	}
+
+	private bool ShouldEnforceConfiguredDelay(OrbFogHandler fogHandler)
+	{
+		if (_initialDelayCompleted || fogHandler == null || !HasAnyConfiguredFogDelay())
+		{
+			return false;
+		}
+		return fogHandler.currentID == 0 || IsCampfireDelayPendingForOrigin(fogHandler.currentID);
+	}
+
+	private bool ShouldHoldFogUntilCampfireActivation(OrbFogHandler fogHandler)
+	{
+		return fogHandler != null
+			&& fogHandler.currentID > 0
+			&& !IsCampfireDelayPendingForOrigin(fogHandler.currentID)
+			&& !fogHandler.isMoving
+			&& !fogHandler.hasArrived
+			&& !_initialDelayCompleted;
+	}
+
+	private bool HasVisibleFogDelayCountdown()
+	{
+		return _fogHiddenBufferTimer >= HiddenFogDelayBufferSeconds;
+	}
+
+	private void ClearPendingCampfireDelayForOrigin(int originId)
+	{
+		if (_delayedFogOriginId == originId)
+		{
+			_delayedFogOriginId = -1;
+		}
+	}
+
+	private int GetAvailableFogOriginCount()
+	{
+		return _orbFogHandler == null ? 0 : ResolveFogOrigins(_orbFogHandler).Length;
+	}
+
+	private bool TryResolveFogPointForCurrentOrigin(out Vector3 fogPoint, out string pointDescription)
+	{
+		fogPoint = Vector3.zero;
+		pointDescription = string.Empty;
+		if (_fogSphere != null)
+		{
+			fogPoint = _fogSphere.fogPoint;
+			pointDescription = "fogSphere";
+			return true;
+		}
+		if (_orbFogHandler == null)
+		{
+			return false;
+		}
+		FogSphereOrigin[] origins = ResolveFogOrigins(_orbFogHandler);
+		if (origins.Length <= 0)
+		{
+			return false;
+		}
+		int originId = Mathf.Clamp(_orbFogHandler.currentID, 0, origins.Length - 1);
+		FogSphereOrigin origin = origins[originId] ?? origins.LastOrDefault(candidate => candidate != null);
+		if (origin == null)
+		{
+			return false;
+		}
+		fogPoint = origin.transform.position;
+		pointDescription = $"origin-{originId}";
+		return true;
+	}
+
+	private bool TryGetPreviousRealFogOriginSize(out float previousOriginSize)
+	{
+		previousOriginSize = 900f;
+		FogSphereOrigin[] origins = ResolveFogOrigins(_orbFogHandler);
+		if (origins.Length <= 0)
+		{
+			return false;
+		}
+		int referenceIndex = Mathf.Clamp(origins.Length - 2, 0, origins.Length - 1);
+		FogSphereOrigin referenceOrigin = origins[referenceIndex];
+		if (referenceOrigin == null || referenceOrigin.size <= 0f)
+		{
+			return false;
+		}
+		previousOriginSize = referenceOrigin.size;
+		return true;
+	}
+
+	private bool TryResolveFogStageCoverageAnchor(Segment fogStageSegment, out Vector3 stageAnchor, out string anchorDescription)
+	{
+		stageAnchor = Vector3.zero;
+		anchorDescription = string.Empty;
+		MapHandler mapHandler = Singleton<MapHandler>.Instance;
+		if (fogStageSegment >= Segment.Peak && mapHandler != null && mapHandler.respawnThePeak != null)
+		{
+			stageAnchor = mapHandler.respawnThePeak.position;
+			anchorDescription = "respawnThePeak";
+			return true;
+		}
+		if (fogStageSegment >= Segment.TheKiln && mapHandler != null && mapHandler.respawnTheKiln != null)
+		{
+			stageAnchor = mapHandler.respawnTheKiln.position;
+			anchorDescription = "respawnTheKiln";
+			return true;
+		}
+		if (mapHandler != null && mapHandler.segments != null && mapHandler.segments.Length > 0)
+		{
+			int segmentIndex = Mathf.Clamp((int)fogStageSegment, 0, mapHandler.segments.Length - 1);
+			MapHandler.MapSegment mapSegment = mapHandler.segments[segmentIndex];
+			if (mapSegment != null)
+			{
+				if (mapSegment.segmentCampfire != null)
+				{
+					Campfire campfire = mapSegment.segmentCampfire.GetComponentInChildren<Campfire>(includeInactive: true);
+					if (campfire != null)
+					{
+						stageAnchor = campfire.transform.position;
+						anchorDescription = $"{fogStageSegment} campfire";
+						return true;
+					}
+					stageAnchor = mapSegment.segmentCampfire.transform.position;
+					anchorDescription = $"{fogStageSegment} segmentCampfire";
+					return true;
+				}
+				if (mapSegment.reconnectSpawnPos != null)
+				{
+					stageAnchor = mapSegment.reconnectSpawnPos.position;
+					anchorDescription = $"{fogStageSegment} reconnectSpawnPos";
+					return true;
+				}
+				if (mapSegment.segmentParent != null)
+				{
+					stageAnchor = mapSegment.segmentParent.transform.position;
+					anchorDescription = $"{fogStageSegment} segmentParent";
+					return true;
+				}
+			}
+		}
+		if (TryResolveSyntheticTargetAnchor(fogStageSegment, out stageAnchor, out anchorDescription))
+		{
+			return true;
+		}
+		Character localCharacter = Character.localCharacter;
+		if (localCharacter != null)
+		{
+			stageAnchor = localCharacter.Center;
+			anchorDescription = "localCharacter";
+			return true;
+		}
+		Character fallbackCharacter = Character.AllCharacters.FirstOrDefault(character => character != null && character.data != null && !character.data.dead);
+		if (fallbackCharacter != null)
+		{
+			stageAnchor = fallbackCharacter.Center;
+			anchorDescription = "firstAliveCharacter";
+			return true;
+		}
+		return false;
+	}
+
+	private float ComputeFogStartSizeForStage(Segment fogStageSegment, Vector3 fogPoint, float baseSize, float minSize, float maxSize, float anchorMargin, float playerMargin)
+	{
+		float computedSize = Mathf.Max(baseSize, minSize);
+		if (TryResolveFogStageCoverageAnchor(fogStageSegment, out Vector3 stageAnchor, out _))
+		{
+			computedSize = Mathf.Max(computedSize, Vector3.Distance(fogPoint, stageAnchor) + anchorMargin);
+		}
+		foreach (Character character in Character.AllCharacters)
+		{
+			if (character == null || character.data == null || character.data.dead)
+			{
+				continue;
+			}
+			computedSize = Mathf.Max(computedSize, Vector3.Distance(fogPoint, character.Center) + playerMargin);
+		}
+		return Mathf.Clamp(computedSize, minSize, maxSize);
+	}
+
+	private float ComputeCalderaFogStartSize(Vector3 fogPoint)
+	{
+		float previousOriginSize = 900f;
+		if (!TryGetPreviousRealFogOriginSize(out previousOriginSize))
+		{
+			previousOriginSize = 900f;
+		}
+		float baseSize = previousOriginSize * 1.05f;
+		return ComputeFogStartSizeForStage(Segment.Caldera, fogPoint, baseSize, CalderaFogMinStartSize, CalderaFogMaxStartSize, 120f, 95f);
+	}
+
+	private bool TryResolveCalderaFogPoint(out Vector3 fogPoint, out string pointDescription)
+	{
+		fogPoint = Vector3.zero;
+		pointDescription = string.Empty;
+		if (!TryResolveFogPointForCurrentOrigin(out Vector3 originalFogPoint, out string originalDescription))
+		{
+			return false;
+		}
+		if (!TryResolveFogStageCoverageAnchor(Segment.Caldera, out Vector3 stageAnchor, out string anchorDescription))
+		{
+			fogPoint = originalFogPoint;
+			pointDescription = originalDescription;
+			return true;
+		}
+		float sourceVerticalOffset = originalFogPoint.y - stageAnchor.y;
+		float verticalDirection = sourceVerticalOffset >= 0f ? 1f : -1f;
+		float targetVerticalOffset = Mathf.Clamp(Mathf.Abs(sourceVerticalOffset) * CalderaFogVerticalOffsetRatio, CalderaFogMinVerticalOffset, CalderaFogMaxVerticalOffset);
+		fogPoint = new Vector3(stageAnchor.x, stageAnchor.y + verticalDirection * targetVerticalOffset, stageAnchor.z);
+		pointDescription = $"{anchorDescription} vertical";
+		return true;
+	}
+
+	private void TryNormalizeCalderaFogStage(bool forceResetCurrentSize)
+	{
+		if (_orbFogHandler == null || !HasFogAuthority())
+		{
+			return;
+		}
+		if (!IsCalderaFogPositionEnabled())
+		{
+			return;
+		}
+		if ((int)MapHandler.CurrentSegmentNumber != (int)Segment.Caldera || _activeSyntheticFogSegmentId >= GetAvailableFogOriginCount())
+		{
+			return;
+		}
+		int availableOriginCount = GetAvailableFogOriginCount();
+		if (availableOriginCount <= 0)
+		{
+			return;
+		}
+		int reusableOriginId = availableOriginCount - 1;
+		if (_orbFogHandler.currentID != reusableOriginId)
+		{
+			return;
+		}
+		if (!forceResetCurrentSize && _orbFogHandler.currentSize > 30f && _orbFogHandler.currentSize < OversizedFogSizeThreshold)
+		{
+			return;
+		}
+		if (!TryResolveCalderaFogPoint(out Vector3 fogPoint, out string pointDescription))
+		{
+			return;
+		}
+		float desiredSize = ComputeCalderaFogStartSize(fogPoint);
+		FogSphere sphere = _fogSphere ?? ResolveFogSphere(_orbFogHandler);
+		if (sphere != null)
+		{
+			_fogSphere = sphere;
+			if (!sphere.gameObject.activeSelf)
+			{
+				sphere.gameObject.SetActive(true);
+			}
+			sphere.fogPoint = fogPoint;
+			sphere.currentSize = desiredSize;
+		}
+		_orbFogHandler.currentStartHeight = float.NegativeInfinity;
+		_orbFogHandler.currentStartForward = float.NegativeInfinity;
+		_orbFogHandler.currentSize = desiredSize;
+		_orbFogHandler.hasArrived = false;
+		if (forceResetCurrentSize)
+		{
+			_orbFogHandler.currentWaitTime = 0f;
+		}
+		Logger.LogInfo($"[{PluginName}] Normalized Caldera fog size to {desiredSize:F1} using {pointDescription}. forceReset={forceResetCurrentSize}, moving={_orbFogHandler.isMoving}.");
+	}
+
+	private static bool IsCalderaFogPositionEnabled()
+	{
+		return CalderaFogPosition != null && CalderaFogPosition.Value;
+	}
+
+	private static bool IsKilnFogPositionEnabled()
+	{
+		return KilnFogPosition != null && KilnFogPosition.Value;
+	}
+
+	private static bool ShouldUseCustomFogPositionForSegment(Segment segment)
+	{
+		if (segment >= Segment.TheKiln)
+		{
+			return IsKilnFogPositionEnabled();
+		}
+		if (segment == Segment.Caldera)
+		{
+			return IsCalderaFogPositionEnabled();
+		}
+		return false;
+	}
+
+	private bool IsLateGameFogColdSuppressionActive()
+	{
+		if (!IsGameplayFogScene(SceneManager.GetActiveScene()) || LoadingScreenHandler.loading)
+		{
+			return _activeSyntheticFogSegmentId >= (int)Segment.TheKiln;
+		}
+		MapHandler mapHandler = Singleton<MapHandler>.Instance;
+		if (mapHandler != null && (int)MapHandler.CurrentSegmentNumber >= (int)Segment.TheKiln)
+		{
+			return true;
+		}
+		return _activeSyntheticFogSegmentId >= (int)Segment.TheKiln;
+	}
+
+	private void ClearSyntheticFogStage()
+	{
+		_pendingSyntheticFogSegmentId = -1;
+		_activeSyntheticFogSegmentId = -1;
+		_syntheticFogPoint = Vector3.zero;
+		_syntheticFogStartSize = 0f;
+	}
+
+	private static bool TryMapSegmentToFogOriginId(Segment segment, int availableOriginCount, out int originId)
+	{
+		originId = -1;
+		if (availableOriginCount <= 0)
+		{
+			return false;
+		}
+		originId = Mathf.Clamp((int)segment, 0, availableOriginCount - 1);
+		return true;
+	}
+
+	private void TryAlignFogOriginToCurrentSegment()
+	{
+		if (_orbFogHandler == null || !HasFogAuthority() || _orbFogHandler.isMoving || !TryGetTargetFogOriginId(out int expectedOriginId))
+		{
+			return;
+		}
+		if (_orbFogHandler.currentID == expectedOriginId)
+		{
+			return;
+		}
+		int previousOriginId = _orbFogHandler.currentID;
+		_orbFogHandler.SetFogOrigin(expectedOriginId);
+		EnsureFogCoverage(_orbFogHandler);
+		SyncFogOriginToGuests();
+		Logger.LogInfo($"[{PluginName}] Aligned fog origin from {previousOriginId} to {expectedOriginId}.");
+	}
+
+	private void TryUpdateSyntheticFogStage()
+	{
+		if (_orbFogHandler == null || !HasFogAuthority())
+		{
+			return;
+		}
+		MapHandler mapHandler = Singleton<MapHandler>.Instance;
+		int availableOriginCount = GetAvailableFogOriginCount();
+		if (mapHandler == null || availableOriginCount <= 0)
+		{
+			return;
+		}
+		int currentSceneSegmentId = (int)MapHandler.CurrentSegmentNumber;
+		if (currentSceneSegmentId < availableOriginCount && _pendingSyntheticFogSegmentId < availableOriginCount)
+		{
+			if (_activeSyntheticFogSegmentId >= 0)
+			{
+				ClearSyntheticFogStage();
+			}
+			return;
+		}
+		int targetSyntheticSegmentId = -1;
+		if (_pendingSyntheticFogSegmentId >= availableOriginCount && currentSceneSegmentId >= _pendingSyntheticFogSegmentId)
+		{
+			targetSyntheticSegmentId = _pendingSyntheticFogSegmentId;
+			_pendingSyntheticFogSegmentId = -1;
+		}
+		else if (currentSceneSegmentId >= availableOriginCount)
+		{
+			targetSyntheticSegmentId = currentSceneSegmentId;
+		}
+		else if (_activeSyntheticFogSegmentId >= availableOriginCount)
+		{
+			targetSyntheticSegmentId = _activeSyntheticFogSegmentId;
+		}
+		if (targetSyntheticSegmentId < availableOriginCount)
+		{
+			return;
+		}
+		Segment targetSyntheticSegment = (Segment)targetSyntheticSegmentId;
+		if (!ShouldUseCustomFogPositionForSegment(targetSyntheticSegment))
+		{
+			if (_activeSyntheticFogSegmentId >= availableOriginCount)
+			{
+				ClearSyntheticFogStage();
+			}
+			return;
+		}
+		if (!TryBuildSyntheticFogStage(targetSyntheticSegment, out Vector3 fogPoint, out float fogSize, out string anchorDescription))
+		{
+			return;
+		}
+		bool stageChanged = _activeSyntheticFogSegmentId != targetSyntheticSegmentId;
+		bool allowRuntimeRefresh = stageChanged || !_orbFogHandler.isMoving || _orbFogHandler.hasArrived || _syntheticFogStartSize <= 0f;
+		bool pointChanged = stageChanged || (allowRuntimeRefresh && Vector3.Distance(_syntheticFogPoint, fogPoint) > 0.1f);
+		bool sizeChanged = stageChanged || (allowRuntimeRefresh && Mathf.Abs(_syntheticFogStartSize - fogSize) > 0.1f);
+		_activeSyntheticFogSegmentId = targetSyntheticSegmentId;
+		if (pointChanged)
+		{
+			_syntheticFogPoint = fogPoint;
+		}
+		if (sizeChanged)
+		{
+			_syntheticFogStartSize = fogSize;
+		}
+		bool dataChanged = pointChanged || sizeChanged;
+		ApplySyntheticFogStageToHandler(resetCurrentSize: sizeChanged);
+		if (!dataChanged)
+		{
+			return;
+		}
+		Logger.LogInfo($"[{PluginName}] Activated synthetic fog stage {targetSyntheticSegmentId} using {anchorDescription}. Point={fogPoint}, size={fogSize:F1}, delayCompleted={_initialDelayCompleted}, moving={_orbFogHandler.isMoving}.");
+		if (_initialDelayCompleted && !_orbFogHandler.isMoving)
+		{
+			StartFogMovement();
+		}
+	}
+
+	private void ApplySyntheticFogStageToHandler(bool resetCurrentSize)
+	{
+		if (_orbFogHandler == null)
+		{
+			return;
+		}
+		FogSphere sphere = _fogSphere ?? ResolveFogSphere(_orbFogHandler);
+		if (sphere != null)
+		{
+			_fogSphere = sphere;
+			if (!sphere.gameObject.activeSelf)
+			{
+				sphere.gameObject.SetActive(true);
+			}
+			sphere.fogPoint = _syntheticFogPoint;
+			if (resetCurrentSize)
+			{
+				sphere.currentSize = _syntheticFogStartSize;
+			}
+		}
+		_orbFogHandler.currentStartHeight = float.NegativeInfinity;
+		_orbFogHandler.currentStartForward = float.NegativeInfinity;
+		if (!resetCurrentSize)
+		{
+			return;
+		}
+		_orbFogHandler.currentSize = _syntheticFogStartSize;
+		_orbFogHandler.currentWaitTime = 0f;
+		_orbFogHandler.hasArrived = false;
+	}
+
+	private bool TryBuildSyntheticFogStage(Segment syntheticSegment, out Vector3 fogPoint, out float fogSize, out string anchorDescription)
+	{
+		fogPoint = Vector3.zero;
+		fogSize = 0f;
+		anchorDescription = string.Empty;
+		if (!TryResolveSyntheticFogAnchor(syntheticSegment, out fogPoint, out anchorDescription))
+		{
+			return false;
+		}
+		fogSize = ComputeSyntheticFogStartSize(syntheticSegment, fogPoint);
+		return fogSize > 0f;
+	}
+
+	private bool TryResolveSyntheticTargetAnchor(Segment syntheticSegment, out Vector3 targetAnchor, out string targetDescription)
+	{
+		targetAnchor = Vector3.zero;
+		targetDescription = string.Empty;
+		MapHandler mapHandler = Singleton<MapHandler>.Instance;
+		if (mapHandler == null)
+		{
+			return false;
+		}
+		if (syntheticSegment >= Segment.Peak && mapHandler.respawnThePeak != null)
+		{
+			targetAnchor = mapHandler.respawnThePeak.position;
+			targetDescription = "respawnThePeak";
+			return true;
+		}
+		if (syntheticSegment >= Segment.TheKiln)
+		{
+			if (mapHandler.segments != null && mapHandler.segments.Length > (int)Segment.TheKiln)
+			{
+				MapHandler.MapSegment kilnSegment = mapHandler.segments[(int)Segment.TheKiln];
+				if (kilnSegment != null && kilnSegment.reconnectSpawnPos != null)
+				{
+					targetAnchor = kilnSegment.reconnectSpawnPos.position;
+					targetDescription = "TheKiln reconnectSpawnPos";
+					return true;
+				}
+				if (kilnSegment != null && kilnSegment.segmentParent != null)
+				{
+					targetAnchor = kilnSegment.segmentParent.transform.position;
+					targetDescription = "TheKiln segmentParent";
+					return true;
+				}
+			}
+			if (mapHandler.respawnTheKiln != null)
+			{
+				targetAnchor = mapHandler.respawnTheKiln.position;
+				targetDescription = "respawnTheKiln";
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private bool TryResolveSyntheticFogAnchorFromOrigins(Segment syntheticSegment, out Vector3 fogPoint, out string anchorDescription)
+	{
+		fogPoint = Vector3.zero;
+		anchorDescription = string.Empty;
+		FogSphereOrigin[] origins = ResolveFogOrigins(_orbFogHandler);
+		FogSphereOrigin lastOrigin = origins.LastOrDefault(origin => origin != null);
+		if (lastOrigin == null)
+		{
+			return false;
+		}
+		FogSphereOrigin previousOrigin = origins.Where(origin => origin != null).Reverse().Skip(1).FirstOrDefault();
+		if (previousOrigin == null)
+		{
+			return false;
+		}
+		Vector3 pathStep = lastOrigin.transform.position - previousOrigin.transform.position;
+		if (pathStep.sqrMagnitude < 1f)
+		{
+			return false;
+		}
+		int extraStageIndex = Mathf.Max((int)syntheticSegment - (origins.Length - 1), 1);
+		Vector3 direction = pathStep.normalized;
+		Vector3 extrapolatedPoint = lastOrigin.transform.position + pathStep * extraStageIndex;
+		if (TryResolveSyntheticTargetAnchor(syntheticSegment, out Vector3 targetAnchor, out string targetDescription))
+		{
+			float projectedDistance = Vector3.Dot(targetAnchor - lastOrigin.transform.position, direction);
+			float desiredDistance = Mathf.Max(projectedDistance + 180f, pathStep.magnitude * extraStageIndex);
+			extrapolatedPoint = lastOrigin.transform.position + direction * desiredDistance;
+			Vector3 lateralOffset = Vector3.ProjectOnPlane(targetAnchor - extrapolatedPoint, direction);
+			extrapolatedPoint += lateralOffset * 0.25f;
+			anchorDescription = $"origin-extrapolated + {targetDescription}";
+		}
+		else
+		{
+			anchorDescription = "origin-extrapolated";
+		}
+		fogPoint = extrapolatedPoint;
+		return true;
+	}
+
+	private bool TryResolveSyntheticFogAnchor(Segment syntheticSegment, out Vector3 fogPoint, out string anchorDescription)
+	{
+		fogPoint = Vector3.zero;
+		anchorDescription = string.Empty;
+		if (TryResolveSyntheticFogAnchorFromOrigins(syntheticSegment, out fogPoint, out anchorDescription))
+		{
+			return true;
+		}
+		MapHandler mapHandler = Singleton<MapHandler>.Instance;
+		if (mapHandler == null)
+		{
+			return false;
+		}
+		if (TryResolveSyntheticTargetAnchor(syntheticSegment, out fogPoint, out anchorDescription))
+		{
+			return true;
+		}
+		Character localCharacter = Character.localCharacter;
+		if (localCharacter != null)
+		{
+			fogPoint = localCharacter.Center;
+			anchorDescription = "localCharacter";
+			return true;
+		}
+		Character fallbackCharacter = Character.AllCharacters.FirstOrDefault(character => character != null);
+		if (fallbackCharacter != null)
+		{
+			fogPoint = fallbackCharacter.Center;
+			anchorDescription = "firstCharacter";
+			return true;
+		}
+		return false;
+	}
+
+	private float ComputeSyntheticFogStartSize(Segment syntheticSegment, Vector3 fogPoint)
+	{
+		float previousOriginSize = 900f;
+		TryGetPreviousRealFogOriginSize(out previousOriginSize);
+		if (syntheticSegment >= Segment.Peak)
+		{
+			float baseSize = previousOriginSize * 0.72f;
+			return ComputeFogStartSizeForStage(syntheticSegment, fogPoint, baseSize, PeakFogMinStartSize, PeakFogMaxStartSize, 130f, 95f);
+		}
+		float kilnBaseSize = previousOriginSize * 0.95f;
+		return ComputeFogStartSizeForStage(syntheticSegment, fogPoint, kilnBaseSize, TheKilnFogMinStartSize, TheKilnFogMaxStartSize, 140f, 100f);
+	}
+
+	private void TryAutoStartCustomRunFogIfNeeded()
+	{
+		if (_orbFogHandler == null || !HasFogAuthority() || !RunSettings.IsCustomRun)
+		{
+			return;
+		}
+		if (ShouldHoldFogUntilCampfireActivation(_orbFogHandler))
+		{
+			return;
+		}
+		if (_orbFogHandler.isMoving || _orbFogHandler.hasArrived)
+		{
+			return;
+		}
+		if (_orbFogHandler.currentWaitTime > 0.2f)
+		{
+			return;
+		}
+		StartFogMovement();
+	}
+
+	private void TryAutoResumeStalledFogMovement()
+	{
+		if (_orbFogHandler == null || !HasFogAuthority() || !_initialDelayCompleted)
+		{
+			return;
+		}
+		if (ShouldHoldFogUntilCampfireActivation(_orbFogHandler))
+		{
+			return;
+		}
+		if (_orbFogHandler.currentID <= 0 || _orbFogHandler.isMoving || _orbFogHandler.hasArrived)
+		{
+			return;
+		}
+		if (!TryGetTargetFogOriginId(out int expectedOriginId) || expectedOriginId != _orbFogHandler.currentID)
+		{
+			return;
+		}
+		float stalledThreshold = GetStalledFogResumeDelaySeconds(_orbFogHandler);
+		if (_orbFogHandler.currentWaitTime < stalledThreshold)
+		{
+			return;
+		}
+		Logger.LogInfo($"[{PluginName}] Resuming stalled fog at origin {_orbFogHandler.currentID} after waiting {_orbFogHandler.currentWaitTime:F1}s.");
+		StartFogMovement();
+	}
+
+	private static float GetStalledFogResumeDelaySeconds(OrbFogHandler fogHandler)
+	{
+		if (fogHandler == null)
+		{
+			return MaxStalledFogResumeDelaySeconds;
+		}
+		return Mathf.Clamp(fogHandler.maxWaitTime * StalledFogResumeDelayRatio, MinStalledFogResumeDelaySeconds, MaxStalledFogResumeDelaySeconds);
 	}
 
 	private void UpdateTrackedFogOrigin()
@@ -522,12 +1423,32 @@ public sealed class Plugin : BaseUnityPlugin
 		_trackedFogOriginId = _orbFogHandler.currentID;
 		if (_trackedFogOriginId > 0)
 		{
-			_initialDelayCompleted = true;
-			_fogDelayTimer = FogDelay?.Value ?? 0f;
+			if (IsCampfireDelayPendingForOrigin(_trackedFogOriginId))
+			{
+				_fogHiddenBufferTimer = 0f;
+				_fogDelayTimer = 0f;
+				_initialDelayCompleted = HiddenFogDelayBufferSeconds <= 0f && (FogDelay == null || FogDelay.Value <= 0f);
+				if (_initialDelayCompleted)
+				{
+					ClearPendingCampfireDelayForOrigin(_trackedFogOriginId);
+					if (!_orbFogHandler.isMoving)
+					{
+						StartFogMovement();
+					}
+				}
+			}
+			else
+			{
+				bool isOriginActive = _orbFogHandler.isMoving || _orbFogHandler.hasArrived || _orbFogHandler.currentWaitTime > 0.2f;
+				_initialDelayCompleted = isOriginActive;
+				_fogHiddenBufferTimer = isOriginActive ? HiddenFogDelayBufferSeconds : 0f;
+				_fogDelayTimer = isOriginActive ? (FogDelay?.Value ?? 0f) : 0f;
+			}
 			return;
 		}
 		if (returnedToFirstOrigin)
 		{
+			_fogHiddenBufferTimer = 0f;
 			_fogDelayTimer = 0f;
 			_initialDelayCompleted = ShouldSkipInitialDelay(_orbFogHandler);
 		}
@@ -539,6 +1460,8 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return;
 		}
+		Logger.LogInfo($"[{PluginName}] Starting fog movement. currentOrigin={_orbFogHandler.currentID}, syntheticStage={_activeSyntheticFogSegmentId}, pendingOrigin={_delayedFogOriginId}, currentSize={_orbFogHandler.currentSize:F1}.");
+		ClearPendingCampfireDelayForOrigin(_orbFogHandler.currentID);
 		bool shouldGrantInitialCompass = !_initialCompassGranted && _orbFogHandler.currentID == 0;
 		PhotonView photonView = _orbFogHandler.GetComponent<PhotonView>();
 		if (PhotonNetwork.InRoom && photonView != null)
@@ -559,6 +1482,134 @@ public sealed class Plugin : BaseUnityPlugin
 		}
 	}
 
+	private bool TryGetTargetFogOriginId(out int expectedOriginId)
+	{
+		if (_delayedFogOriginId >= 0)
+		{
+			expectedOriginId = _delayedFogOriginId;
+			return true;
+		}
+		return TryGetExpectedFogOriginIdFromScene(out expectedOriginId);
+	}
+
+	private bool TryGetExpectedFogOriginIdFromScene(out int expectedOriginId)
+	{
+		expectedOriginId = -1;
+		if (!IsGameplayFogScene(SceneManager.GetActiveScene()) || LoadingScreenHandler.loading)
+		{
+			return false;
+		}
+		MapHandler mapHandler = Singleton<MapHandler>.Instance;
+		if (mapHandler == null)
+		{
+			return false;
+		}
+		int availableOriginCount = GetAvailableFogOriginCount();
+		return TryMapSegmentToFogOriginId(MapHandler.CurrentSegmentNumber, availableOriginCount, out expectedOriginId);
+	}
+
+	private void HandleAuthorityChangeIfNeeded(bool modEnabled)
+	{
+		bool hasAuthority = HasFogAuthority();
+		if (hasAuthority == _lastHadFogAuthority)
+		{
+			return;
+		}
+		_lastHadFogAuthority = hasAuthority;
+		ResetFogStateSyncSnapshot();
+		_remoteFogSuppressionDebt.Clear();
+		if (!hasAuthority && PhotonNetwork.InRoom)
+		{
+			RestoreVanillaFogSpeed();
+			ResetFogRuntimeState();
+			SetFogUiVisible(false);
+			CleanupCompassLobbyNotice();
+			return;
+		}
+		_lastFogStateSyncTime = -FogStateSyncIntervalSeconds;
+		_lastRemoteStatusSyncTime = -RemoteStatusSyncIntervalSeconds;
+		_lastCompassGrantSyncTime = -CompassGrantSyncIntervalSeconds;
+		if (modEnabled)
+		{
+			_fogStateInitialized = false;
+		}
+	}
+
+	private static bool HasRemotePlayers()
+	{
+		return PhotonNetwork.InRoom && PhotonNetwork.CurrentRoom != null && PhotonNetwork.CurrentRoom.PlayerCount > 1;
+	}
+
+	private void ResetFogStateSyncSnapshot()
+	{
+		_hasSyncedFogStateSnapshot = false;
+		_lastSyncedFogOriginId = -1;
+		_lastSyncedFogSize = float.NaN;
+		_lastSyncedFogIsMoving = false;
+		_lastSyncedFogHasArrived = false;
+	}
+
+	private void CacheFogStateSyncSnapshot()
+	{
+		if (_orbFogHandler == null)
+		{
+			ResetFogStateSyncSnapshot();
+			return;
+		}
+		_hasSyncedFogStateSnapshot = true;
+		_lastSyncedFogOriginId = _orbFogHandler.currentID;
+		_lastSyncedFogSize = _orbFogHandler.currentSize;
+		_lastSyncedFogIsMoving = _orbFogHandler.isMoving;
+		_lastSyncedFogHasArrived = _orbFogHandler.hasArrived;
+	}
+
+	private bool NeedsFogStateInitSync()
+	{
+		return !_hasSyncedFogStateSnapshot
+			|| _orbFogHandler == null
+			|| _orbFogHandler.currentID != _lastSyncedFogOriginId
+			|| _orbFogHandler.hasArrived != _lastSyncedFogHasArrived;
+	}
+
+	private bool NeedsFogStateDeltaSync()
+	{
+		return !_hasSyncedFogStateSnapshot
+			|| _orbFogHandler == null
+			|| _orbFogHandler.isMoving != _lastSyncedFogIsMoving
+			|| float.IsNaN(_lastSyncedFogSize)
+			|| Mathf.Abs(_orbFogHandler.currentSize - _lastSyncedFogSize) >= FogStateSyncSizeThreshold;
+	}
+
+	private void SyncFogOriginToGuests()
+	{
+		if (_orbFogHandler == null || !HasRemotePlayers() || !PhotonNetwork.IsMasterClient)
+		{
+			ResetFogStateSyncSnapshot();
+			return;
+		}
+		PhotonView photonView = _orbFogHandler.GetComponent<PhotonView>();
+		if (photonView == null)
+		{
+			return;
+		}
+		try
+		{
+			photonView.RPC("RPC_InitFog", RpcTarget.Others, new object[]
+			{
+				_orbFogHandler.currentID,
+				_orbFogHandler.currentSize,
+				_orbFogHandler.hasArrived,
+				_orbFogHandler.isMoving
+			});
+			_lastFogStateSyncTime = Time.unscaledTime;
+			CacheFogStateSyncSnapshot();
+		}
+		catch (Exception ex)
+		{
+			Logger.LogDebug($"[{PluginName}] Fog origin sync skipped: {ex.Message}");
+		}
+	}
+
 	private void TryGrantInitialCompassIfNeeded()
 	{
 		if (_initialCompassGranted || _orbFogHandler == null || _orbFogHandler.currentID != 0)
@@ -575,8 +1626,9 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private void SyncFogStateToGuestsIfNeeded()
 	{
-		if (_orbFogHandler == null || !PhotonNetwork.InRoom || !PhotonNetwork.IsMasterClient)
+		if (_orbFogHandler == null || !HasRemotePlayers() || !PhotonNetwork.IsMasterClient)
 		{
+			ResetFogStateSyncSnapshot();
 			return;
 		}
 		float now = Time.unscaledTime;
@@ -590,13 +1642,33 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return;
 		}
+		bool needsInitSync = NeedsFogStateInitSync();
+		bool needsDeltaSync = NeedsFogStateDeltaSync();
+		if (!needsInitSync && !needsDeltaSync)
+		{
+			return;
+		}
 		try
 		{
-			photonView.RPC("RPCA_SyncFog", RpcTarget.Others, new object[]
+			if (needsInitSync)
 			{
-				_orbFogHandler.currentSize,
-				_orbFogHandler.isMoving
-			});
+				photonView.RPC("RPC_InitFog", RpcTarget.Others, new object[]
+				{
+					_orbFogHandler.currentID,
+					_orbFogHandler.currentSize,
+					_orbFogHandler.hasArrived,
+					_orbFogHandler.isMoving
+				});
+			}
+			else
+			{
+				photonView.RPC("RPCA_SyncFog", RpcTarget.Others, new object[]
+				{
+					_orbFogHandler.currentSize,
+					_orbFogHandler.isMoving
+				});
+			}
+			CacheFogStateSyncSnapshot();
 		}
 		catch (Exception ex)
 		{
@@ -606,23 +1678,28 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private void SyncRemoteStatusSuppressionIfNeeded()
 	{
-		if (!PhotonNetwork.InRoom || !PhotonNetwork.IsMasterClient)
+		if (!ShouldSuppressFogColdDamage() || !HasRemotePlayers() || !PhotonNetwork.IsMasterClient)
 		{
+			_remoteFogSuppressionDebt.Clear();
 			return;
 		}
+		float syncInterval = GetRemoteStatusSyncIntervalSeconds();
 		float now = Time.unscaledTime;
-		float elapsed = _lastRemoteStatusSyncTime < 0f ? RemoteStatusSyncIntervalSeconds : now - _lastRemoteStatusSyncTime;
-		if (elapsed < RemoteStatusSyncIntervalSeconds)
+		float elapsed = _lastRemoteStatusSyncTime < 0f ? syncInterval : now - _lastRemoteStatusSyncTime;
+		if (elapsed < syncInterval)
 		{
 			return;
 		}
 		_lastRemoteStatusSyncTime = now;
+		HashSet<int> activeKeys = new HashSet<int>();
 		foreach (Character character in Character.AllCharacters)
 		{
 			if (!ShouldSendRemoteStatusSuppression(character))
 			{
+				ForgetRemoteStatusSuppression(character);
 				continue;
 			}
+			activeKeys.Add(GetRemoteStatusSuppressionKey(character));
 			float[] deltas = BuildRemoteStatusSuppressionPayload(character, elapsed);
 			if (deltas == null)
 			{
@@ -637,33 +1714,118 @@ public sealed class Plugin : BaseUnityPlugin
 				Logger.LogDebug($"[{PluginName}] Remote status suppression skipped for {character.characterName}: {ex.Message}");
 			}
 		}
+		int[] staleKeys = _remoteFogSuppressionDebt.Keys.Where(key => !activeKeys.Contains(key)).ToArray();
+		foreach (int staleKey in staleKeys)
+		{
+			_remoteFogSuppressionDebt.Remove(staleKey);
+		}
 	}
 
 	private static bool ShouldSendRemoteStatusSuppression(Character character)
 	{
-		return character != null && character.photonView != null && character.photonView.Owner != null && !character.photonView.IsMine && !character.isBot && !character.isZombie && !character.data.dead;
+		return ShouldSuppressFogColdDamage()
+			&& HasFogAuthority()
+			&& character != null
+			&& character.photonView != null
+			&& character.photonView.Owner != null
+			&& !character.photonView.IsMine
+			&& !character.isBot
+			&& !character.isZombie
+			&& character.data != null
+			&& !character.data.dead;
+	}
+
+	private static float GetRemoteStatusSyncIntervalSeconds()
+	{
+		return ShouldPreserveVanillaLateGameNoCold() ? LateGameRemoteStatusSyncIntervalSeconds : RemoteStatusSyncIntervalSeconds;
 	}
 
 	private float[] BuildRemoteStatusSuppressionPayload(Character character, float elapsed)
 	{
-		if (!character.data.isSkeleton)
+		if (!ShouldSuppressFogColdDamage())
 		{
-			float[] payload = new float[StatusTypeCount];
-			payload[(int)CharacterAfflictions.STATUSTYPE.Cold] = -1f;
-			return payload;
+			if (character != null)
+			{
+				_remoteFogSuppressionDebt.Remove(GetRemoteStatusSuppressionKey(character));
+			}
+			return null;
 		}
-		if (!IsCharacterOutsideCurrentFogSphere(character))
+		if (character?.data == null)
 		{
 			return null;
 		}
-		float[] skeletonPayload = new float[StatusTypeCount];
-		skeletonPayload[(int)CharacterAfflictions.STATUSTYPE.Injury] = -Mathf.Max(FogColdPerSecond / 8f * Mathf.Max(elapsed, RemoteStatusSyncIntervalSeconds) * 1.25f, 0.001f);
-		return skeletonPayload;
+		int playerKey = GetRemoteStatusSuppressionKey(character);
+		float pendingDebt = _remoteFogSuppressionDebt.TryGetValue(playerKey, out float storedDebt) ? storedDebt : 0f;
+		if (TryGetCurrentFogSuppressionRate(character, out float ratePerSecond))
+		{
+			pendingDebt += Mathf.Max(ratePerSecond, 0f) * Mathf.Max(elapsed, 0f);
+		}
+		if (pendingDebt <= 0f)
+		{
+			_remoteFogSuppressionDebt.Remove(playerKey);
+			return null;
+		}
+		CharacterAfflictions.STATUSTYPE statusType = GetFogSuppressionStatusType(character);
+		float currentStatus = character.refs?.afflictions != null ? character.refs.afflictions.GetCurrentStatus(statusType) : 0f;
+		float transferAmount = GetSuppressionTransferAmount(pendingDebt, currentStatus);
+		_remoteFogSuppressionDebt[playerKey] = Mathf.Max(pendingDebt - transferAmount, 0f);
+		if (_remoteFogSuppressionDebt[playerKey] <= 0.0001f)
+		{
+			_remoteFogSuppressionDebt.Remove(playerKey);
+		}
+		if (transferAmount <= 0f)
+		{
+			return null;
+		}
+		float[] payload = new float[StatusTypeCount];
+		payload[(int)statusType] = 0f - transferAmount;
+		return payload;
 	}
 
-	private bool IsCharacterOutsideCurrentFogSphere(Character character)
+	private bool TryGetCurrentFogSuppressionRate(Character character, out float ratePerSecond)
 	{
-		return _fogSphere != null && Mathf.Approximately(_fogSphere.ENABLE, 1f) && Vector3.Distance(_fogSphere.fogPoint, character.Center) > _fogSphere.currentSize;
+		ratePerSecond = 0f;
+		if (!ShouldSuppressFogColdDamage() || character == null)
+		{
+			return false;
+		}
+		if (IsCharacterInsideFogSphere(character))
+		{
+			ratePerSecond += FogColdPerSecond;
+		}
+		if (IsCharacterInsideLegacyFog(character, out float legacyRate))
+		{
+			ratePerSecond += legacyRate;
+		}
+		return ratePerSecond > 0f;
+	}
+
+	private bool IsCharacterInsideAnyFog(Character character)
+	{
+		return IsCharacterInsideFogSphere(character) || IsCharacterInsideLegacyFog(character, out _);
+	}
+
+	private bool IsCharacterInsideFogSphere(Character character)
+	{
+		return _fogSphere != null
+			&& character != null
+			&& Mathf.Approximately(_fogSphere.ENABLE, 1f)
+			&& Vector3.Distance(_fogSphere.fogPoint, character.Center) > _fogSphere.currentSize;
+	}
+
+	private bool IsCharacterInsideLegacyFog(Character character, out float ratePerSecond)
+	{
+		ratePerSecond = 0f;
+		if (_legacyFog == null || character == null || !_legacyFog.isActiveAndEnabled || !_legacyFog.gameObject.activeInHierarchy)
+		{
+			return false;
+		}
+		if (!(character.Center.y < _legacyFog.transform.position.y))
+		{
+			return false;
+		}
+		ratePerSecond = Mathf.Max(_legacyFog.amount, 0f);
+		return ratePerSecond > 0f;
 	}
 
 	private bool TryResolveCompassItem()
@@ -916,31 +2078,37 @@ public sealed class Plugin : BaseUnityPlugin
 		}
 	}
 
-	private bool DropCompassNearPlayer(Player player, string reason)
+	private bool DropCompassInFrontOfPlayer(Player player, string reason)
 	{
 		if (player == null || _compassItem == null)
 		{
 			return false;
 		}
 		Vector3 spawnPosition = GetCompassDropPosition(player);
+		Quaternion spawnRotation = GetCompassDropRotation(player);
 		try
 		{
 			if (PhotonNetwork.InRoom)
 			{
-				PhotonNetwork.InstantiateItemRoom(_compassItem.name, spawnPosition, Quaternion.identity);
+				PhotonNetwork.InstantiateItemRoom(_compassItem.name, spawnPosition, spawnRotation);
 			}
 			else
 			{
-				UnityEngine.Object.Instantiate(_compassItem.gameObject, spawnPosition, Quaternion.identity);
+				UnityEngine.Object.Instantiate(_compassItem.gameObject, spawnPosition, spawnRotation);
 			}
-			Logger.LogDebug($"[{PluginName}] Dropped fallback compass near {player.name} ({reason}).");
+			Logger.LogDebug($"[{PluginName}] Spawned compass in front of {player.name} ({reason}).");
 			return true;
 		}
 		catch (Exception ex)
 		{
-			Logger.LogWarning($"[{PluginName}] Failed to drop fallback compass near {player.name} ({reason}): {ex.Message}");
+			Logger.LogWarning($"[{PluginName}] Failed to spawn compass in front of {player.name} ({reason}): {ex.Message}");
 			return false;
 		}
+	}
+
+	private bool DropCompassNearPlayer(Player player, string reason)
+	{
+		return DropCompassInFrontOfPlayer(player, reason);
 	}
 
 	private static Vector3 GetCompassDropPosition(Player player)
@@ -953,6 +2121,17 @@ public sealed class Plugin : BaseUnityPlugin
 			forward = Vector3.forward;
 		}
 		return origin + Vector3.up * 0.5f + forward.normalized * 1.1f;
+	}
+
+	private static Quaternion GetCompassDropRotation(Player player)
+	{
+		Character character = player.character;
+		Vector3 forward = character != null ? Vector3.ProjectOnPlane(character.transform.forward, Vector3.up) : player.transform.forward;
+		if (forward.sqrMagnitude < 0.01f)
+		{
+			forward = Vector3.forward;
+		}
+		return Quaternion.LookRotation(forward.normalized, Vector3.up);
 	}
 
 	private static Vector3 GetCompassAboveHeadPosition(Player player)
@@ -990,6 +2169,90 @@ public sealed class Plugin : BaseUnityPlugin
 		TrySpawnManualCompassForLocalPlayer();
 	}
 
+	private void HandleHiddenNightTestHotkey()
+	{
+		if (!IsModFeatureEnabled() || !HasFogAuthority() || HiddenNightTestHotkey == KeyCode.None)
+		{
+			ResetHiddenNightTestHotkeyState();
+			return;
+		}
+		if (!IsGameplayFogScene(SceneManager.GetActiveScene()) || LoadingScreenHandler.loading)
+		{
+			ResetHiddenNightTestHotkeyState();
+			return;
+		}
+		GUIManager instance = GUIManager.instance;
+		if (instance != null && instance.windowBlockingInput)
+		{
+			ResetHiddenNightTestHotkeyState();
+			return;
+		}
+		if (!Input.GetKey(HiddenNightTestHotkey))
+		{
+			ResetHiddenNightTestHotkeyState();
+			return;
+		}
+		if (_hiddenNightTestTriggeredThisHold)
+		{
+			return;
+		}
+		_hiddenNightTestHoldTimer += Time.unscaledDeltaTime;
+		if (_hiddenNightTestHoldTimer < HiddenNightTestHoldSeconds)
+		{
+			return;
+		}
+		_hiddenNightTestTriggeredThisHold = true;
+		SwitchToNightForTesting();
+	}
+
+	private void ResetHiddenNightTestHotkeyState()
+	{
+		_hiddenNightTestHoldTimer = 0f;
+		_hiddenNightTestTriggeredThisHold = false;
+	}
+
+	private void SwitchToNightForTesting()
+	{
+		DayNightManager dayNightManager = UnityEngine.Object.FindAnyObjectByType<DayNightManager>();
+		if (dayNightManager == null)
+		{
+			Logger.LogDebug($"[{PluginName}] Hidden night-test hotkey skipped because DayNightManager is unavailable.");
+			return;
+		}
+		float nightTime = CalculateNightTestTime(dayNightManager);
+		try
+		{
+			dayNightManager.setTimeOfDay(nightTime);
+			dayNightManager.UpdateCycle();
+			PhotonView photonView = dayNightManager.GetComponent<PhotonView>();
+			if (PhotonNetwork.InRoom && photonView != null)
+			{
+				photonView.RPC("RPCA_SyncTime", RpcTarget.Others, new object[] { nightTime });
+			}
+			Logger.LogInfo($"[{PluginName}] Hidden night-test hotkey forced night at {nightTime:F3}.");
+		}
+		catch (Exception ex)
+		{
+			Logger.LogWarning($"[{PluginName}] Hidden night-test hotkey failed: {ex.Message}");
+		}
+	}
+
+	private static float CalculateNightTestTime(DayNightManager dayNightManager)
+	{
+		if (dayNightManager == null)
+		{
+			return FallbackNightTimeNormalized;
+		}
+		float dayStart = Mathf.Repeat(dayNightManager.dayStart, 1f);
+		float dayEnd = Mathf.Repeat(dayNightManager.dayEnd, 1f);
+		float nightDuration = Mathf.Repeat(dayStart - dayEnd, 1f);
+		if (nightDuration < 0.01f)
+		{
+			return FallbackNightTimeNormalized;
+		}
+		return Mathf.Repeat(dayEnd + nightDuration * 0.5f, 1f);
+	}
+
 	private void TrySpawnManualCompassForLocalPlayer()
 	{
 		if (!TryResolveCompassItem())
@@ -1001,7 +2264,7 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return;
 		}
-		if (!DropCompassAbovePlayerHead(localPlayer, "manual-hotkey"))
+		if (!DropCompassInFrontOfPlayer(localPlayer, "manual-hotkey"))
 		{
 			Logger.LogWarning($"[{PluginName}] Manual compass hotkey spawn failed for {localPlayer.name}.");
 		}
@@ -1389,7 +2652,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private bool ShouldShowFogUi(Canvas targetCanvas = null)
 	{
-		if (!IsModFeatureEnabled() || !(FogUiEnabled?.Value ?? true))
+		if (!IsModFeatureEnabled() || !(FogUiEnabled?.Value ?? true) || !HasFogAuthority())
 		{
 			return false;
 		}
@@ -1710,7 +2973,7 @@ public sealed class Plugin : BaseUnityPlugin
 			}
 			return isChinese ? "未就绪" : "INACTIVE";
 		}
-		if (HasFogAuthority() && !_initialDelayCompleted && _orbFogHandler.currentID == 0)
+		if (HasFogAuthority() && ShouldEnforceConfiguredDelay(_orbFogHandler))
 		{
 			return isChinese ? "等待中" : "WAITING";
 		}
@@ -1727,7 +2990,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private string GetFogCountdownLabel(bool isChinese)
 	{
-		if (!HasFogAuthority() || _orbFogHandler == null || _initialDelayCompleted || _orbFogHandler.currentID != 0)
+		if (!HasFogAuthority() || _orbFogHandler == null || !ShouldEnforceConfiguredDelay(_orbFogHandler) || !HasVisibleFogDelayCountdown())
 		{
 			return string.Empty;
 		}
@@ -1824,14 +3087,22 @@ public sealed class Plugin : BaseUnityPlugin
 		_initialDelayCompleted = false;
 		_initialCompassGranted = false;
 		_totalCompassGrantCount = 0;
+		_delayedFogOriginId = -1;
 		_trackedFogOriginId = -1;
+		ClearSyntheticFogStage();
 		_fogDelayTimer = 0f;
+		_fogHiddenBufferTimer = 0f;
 		_lastFogStateSyncTime = -FogStateSyncIntervalSeconds;
 		_lastRemoteStatusSyncTime = -RemoteStatusSyncIntervalSeconds;
 		_lastCompassGrantSyncTime = -CompassGrantSyncIntervalSeconds;
 		_fogHandlerSearchTimer = 0f;
 		_grantedCampfireCompassIds.Clear();
+		_restoredCheckpointCampfireIds.Clear();
 		_playerCompassGrantCounts.Clear();
+		_remoteFogSuppressionDebt.Clear();
+		_localFogStatusSuppressionDepth = 0;
+		ResetHiddenNightTestHotkeyState();
+		ResetFogStateSyncSnapshot();
 	}
 
 	private static bool DetectChineseLanguage()
@@ -1919,8 +3190,11 @@ public sealed class Plugin : BaseUnityPlugin
 		return configKey switch
 		{
 			ConfigKey.ModEnabled => isChineseLanguage ? "模组开关" : "Enable Mod",
+			ConfigKey.FogColdSuppression => isChineseLanguage ? "毒雾寒冷值开关" : "Suppress Fog Cold",
 			ConfigKey.FogSpeed => isChineseLanguage ? "毒雾移动速度" : "Fog Speed",
 			ConfigKey.FogDelay => isChineseLanguage ? "毒雾延迟时间s" : "Fog Delay (s)",
+			ConfigKey.CalderaFogPosition => isChineseLanguage ? "火山毒雾位置开关" : "Caldera Fog Position",
+			ConfigKey.KilnFogPosition => isChineseLanguage ? "熔炉毒雾位置开关" : "Kiln Fog Position",
 			ConfigKey.CompassHotkey => isChineseLanguage ? "指南针生成按键" : "Compass Hotkey",
 			ConfigKey.FogUiEnabled => isChineseLanguage ? "UI启用" : "Fog UI",
 			ConfigKey.FogUiX => isChineseLanguage ? "UI X位置" : "UI X Position",
@@ -1934,9 +3208,12 @@ public sealed class Plugin : BaseUnityPlugin
 	{
 		return configKey switch
 		{
-			ConfigKey.ModEnabled => isChineseLanguage ? "启用独立毒雾模组。仅主机需要安装；主机会同步毒雾进度、冷伤害压制与指南针奖励。" : "Enable the standalone fog mod. Only the host needs it; the host synchronizes fog progress, cold suppression, and compass rewards.",
+			ConfigKey.ModEnabled => isChineseLanguage ? "启用独立毒雾模组。仅主机需要安装；主机会同步毒雾进度、寒冷修正和指南针奖励。毒雾寒冷是否抵消由下方开关单独控制，但熔炉和山顶会保留原版“不再因毒雾受寒”的规则，不影响正常夜晚寒冷或游戏自定义设置。" : "Enable the standalone fog mod. Only the host needs it; the host synchronizes fog progress, cold fixes, and compass rewards. Fog-only cold suppression is controlled separately below, but kiln and peak still preserve vanilla no-fog-cold behavior without touching normal night cold or unrelated custom settings.",
+			ConfigKey.FogColdSuppression => isChineseLanguage ? "控制是否抵消毒雾带来的寒冷值。关闭后前半程会恢复原版毒雾寒冷；熔炉和山顶仍保留原版“不再因毒雾受寒”的逻辑，不影响夜晚寒冷、毒雾推进和游戏中的其他自定义设置。" : "Toggle fog-only cold suppression. When off, earlier stages can use vanilla fog cold again; kiln and peak still preserve vanilla no-fog-cold behavior. This does not affect night cold, fog progression, or other in-game custom settings.",
 			ConfigKey.FogSpeed => isChineseLanguage ? "毒雾移动速度，范围 0.3~5，默认 2。" : "Fog movement speed. Range 0.3 to 5, default 2.",
 			ConfigKey.FogDelay => isChineseLanguage ? "首段毒雾开始移动前的延迟，范围 0~150 秒，默认 90 秒。" : "Delay before the first fog segment starts moving. Range 0 to 150 seconds, default 90 seconds.",
+			ConfigKey.CalderaFogPosition => isChineseLanguage ? "启用后使用 FogClimb 的火山毒雾位置修正，让火山阶段的毒雾更容易看到。默认关闭。" : "Use FogClimb's Caldera fog position override so the fog is easier to see in the volcano stage. Disabled by default.",
+			ConfigKey.KilnFogPosition => isChineseLanguage ? "启用后使用 FogClimb 的熔炉/山顶毒雾位置修正。关闭时不接管后两关的自定义毒雾位置。默认关闭。" : "Use FogClimb's kiln and peak fog position override. When disabled, the mod does not take over the custom fog positions for the last two stages. Disabled by default.",
 			ConfigKey.CompassHotkey => isChineseLanguage ? "按键在自己头顶生成普通指南针；设为 None 可禁用。" : "Spawn a normal compass above your head with a hotkey. Set to None to disable.",
 			ConfigKey.FogUiEnabled => isChineseLanguage ? "显示毒雾 HUD 文本。" : "Show the fog HUD text.",
 			ConfigKey.FogUiX => isChineseLanguage ? "毒雾 HUD 的 X 位置，默认 60。" : "Fog HUD X position. Default 60.",
@@ -1956,24 +3233,68 @@ public sealed class Plugin : BaseUnityPlugin
 		return ModEnabled == null || ModEnabled.Value;
 	}
 
+	internal static bool IsFogColdSuppressionEnabled()
+	{
+		return FogColdSuppression == null || FogColdSuppression.Value;
+	}
+
+	internal static bool ShouldPreserveVanillaLateGameNoCold()
+	{
+		return HasFogAuthority() && IsModFeatureEnabled() && Instance != null && Instance.IsLateGameFogColdSuppressionActive();
+	}
+
 	internal static bool ShouldSuppressFogColdDamage()
 	{
-		return IsModFeatureEnabled();
+		return HasFogAuthority() && IsModFeatureEnabled() && (IsFogColdSuppressionEnabled() || ShouldPreserveVanillaLateGameNoCold());
 	}
 
-	internal static bool IsInternalColdClearInProgress()
+	internal static bool ShouldForceFogCoverageEverywhere()
 	{
-		return _isClearingColdStatus;
+		return HasFogAuthority() && IsModFeatureEnabled();
 	}
 
-	internal static bool ShouldSuppressAmbientColdDamageFor(CharacterAfflictions afflictions)
+	internal static void NotifyFogHandlerChanged(OrbFogHandler fogHandler)
 	{
-		return afflictions != null && ShouldSuppressAmbientColdDamageFor(afflictions.character);
+		Instance?.EnsureFogCoverage(fogHandler);
 	}
 
-	internal static bool ShouldSuppressAmbientColdDamageFor(Character character)
+	internal static void BeginLocalFogStatusSuppression()
 	{
-		return IsModFeatureEnabled() && character != null && !character.isBot && !character.isZombie && character == Character.localCharacter;
+		if (ShouldSuppressFogColdDamage())
+		{
+			_localFogStatusSuppressionDepth++;
+		}
+	}
+
+	internal static void EndLocalFogStatusSuppression()
+	{
+		if (_localFogStatusSuppressionDepth > 0)
+		{
+			_localFogStatusSuppressionDepth--;
+		}
+	}
+
+	internal static bool ShouldSuppressLocalFogSourceStatus(CharacterAfflictions afflictions, CharacterAfflictions.STATUSTYPE statusType)
+	{
+		if (!ShouldSuppressFogColdDamage() || afflictions == null)
+		{
+			return false;
+		}
+		Character character = afflictions.character;
+		if (character == null || character != Character.localCharacter || character.isBot || character.isZombie || character.data == null)
+		{
+			return false;
+		}
+		bool isFogColdStatus = character.data.isSkeleton ? statusType == CharacterAfflictions.STATUSTYPE.Injury : statusType == CharacterAfflictions.STATUSTYPE.Cold;
+		if (!isFogColdStatus)
+		{
+			return false;
+		}
+		if (_localFogStatusSuppressionDepth > 0)
+		{
+			return true;
+		}
+		return ShouldPreserveVanillaLateGameNoCold() && Instance != null && Instance.IsCharacterInsideAnyFog(character);
 	}
 
 	internal static bool ShouldBlockVanillaOrbFogWait(OrbFogHandler fogHandler)
@@ -1987,72 +3308,148 @@ public sealed class Plugin : BaseUnityPlugin
 			Instance.InitializeFogRuntimeState(fogHandler);
 		}
 		Instance.UpdateTrackedFogOrigin();
-		return fogHandler.currentID == 0 && !Instance._initialDelayCompleted;
-	}
-
-	internal static void EnforceAmbientColdSuppression(CharacterAfflictions afflictions)
-	{
-		if (!ShouldSuppressAmbientColdDamageFor(afflictions))
-		{
-			return;
-		}
-		try
-		{
-			if (!_isClearingColdStatus)
-			{
-				_isClearingColdStatus = true;
-				afflictions.SetStatus(CharacterAfflictions.STATUSTYPE.Cold, 0f, false);
-			}
-		}
-		catch
-		{
-		}
-		finally
-		{
-			_isClearingColdStatus = false;
-		}
-		int coldIndex = (int)CharacterAfflictions.STATUSTYPE.Cold;
-		foreach (string fieldName in ColdStatusArrayFields)
-		{
-			ZeroColdStatusArrayField(afflictions, fieldName, coldIndex);
-		}
-		try
-		{
-			CharacterData data = afflictions.character?.data;
-			FieldInfo fieldInfo = data?.GetType().GetField("sinceAddedCold", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-			if (fieldInfo != null && fieldInfo.FieldType == typeof(float))
-			{
-				fieldInfo.SetValue(data, 0f);
-			}
-		}
-		catch
-		{
-		}
-	}
-
-	internal static void ClearLocalAmbientColdStatus()
-	{
-		if (!IsModFeatureEnabled() || Instance == null || Time.unscaledTime - Instance._lastColdClearTime < ColdClearIntervalSeconds)
-		{
-			return;
-		}
-		CharacterAfflictions afflictions = Character.localCharacter?.refs?.afflictions;
-		if (afflictions == null)
-		{
-			return;
-		}
-		Instance._lastColdClearTime = Time.unscaledTime;
-		EnforceAmbientColdSuppression(afflictions);
-	}
-
-	internal static void ClearLocalFogColdStatus()
-	{
-		ClearLocalAmbientColdStatus();
+		return Instance.ShouldEnforceConfiguredDelay(fogHandler) || Instance.ShouldHoldFogUntilCampfireActivation(fogHandler);
 	}
 
 	internal static void NotifyCampfireLit(Campfire campfire)
 	{
 		Instance?.HandleCampfireLit(campfire);
+	}
+
+	private void UpdateLocalInstallStateAdvertisement()
+	{
+		if (!PhotonNetwork.InRoom || PhotonNetwork.LocalPlayer == null)
+		{
+			_hasAdvertisedInstallState = false;
+			return;
+		}
+		bool isEnabled = ShouldSuppressFogColdDamage();
+		if (_hasAdvertisedInstallState && _lastAdvertisedInstallState == isEnabled && LocalInstallStateMatches(isEnabled))
+		{
+			return;
+		}
+		try
+		{
+			PhotonNetwork.LocalPlayer.SetCustomProperties(new ExitGames.Client.Photon.Hashtable
+			{
+				{
+					NetworkInstallStateKey,
+					isEnabled
+				}
+			});
+			_lastAdvertisedInstallState = isEnabled;
+			_hasAdvertisedInstallState = true;
+		}
+		catch (Exception ex)
+		{
+			_hasAdvertisedInstallState = false;
+			Logger.LogDebug($"[{PluginName}] Failed to publish install-state metadata: {ex.Message}");
+		}
+	}
+
+	private static bool LocalInstallStateMatches(bool expected)
+	{
+		Photon.Realtime.Player localPlayer = PhotonNetwork.LocalPlayer;
+		if (localPlayer?.CustomProperties == null || !localPlayer.CustomProperties.ContainsKey(NetworkInstallStateKey))
+		{
+			return false;
+		}
+		return TryReadInstallState(localPlayer, out bool currentState) && currentState == expected;
+	}
+
+	private static bool HasRemoteFogSuppressionSupport(Photon.Realtime.Player player)
+	{
+		return TryReadInstallState(player, out bool isEnabled) && isEnabled;
+	}
+
+	private static bool TryReadInstallState(Photon.Realtime.Player player, out bool isEnabled)
+	{
+		isEnabled = false;
+		if (player?.CustomProperties == null || !player.CustomProperties.ContainsKey(NetworkInstallStateKey))
+		{
+			return false;
+		}
+		object rawValue = player.CustomProperties[NetworkInstallStateKey];
+		switch (rawValue)
+		{
+		case bool boolValue:
+			isEnabled = boolValue;
+			return true;
+		case string stringValue:
+			return bool.TryParse(stringValue, out isEnabled);
+		default:
+			return false;
+		}
+	}
+
+	private static int GetRemoteStatusSuppressionKey(Character character)
+	{
+		return character?.photonView?.Owner?.ActorNumber ?? character?.GetInstanceID() ?? 0;
+	}
+
+	private void ForgetRemoteStatusSuppression(Character character)
+	{
+		int key = GetRemoteStatusSuppressionKey(character);
+		if (key != 0)
+		{
+			_remoteFogSuppressionDebt.Remove(key);
+		}
+	}
+
+	private void TryRestoreCheckpointCampfireDelay()
+	{
+		if (!IsModFeatureEnabled() || !HasFogAuthority() || _orbFogHandler == null || Character.localCharacter == null)
+		{
+			return;
+		}
+		if (!IsGameplayFogScene(SceneManager.GetActiveScene()) || LoadingScreenHandler.loading)
+		{
+			return;
+		}
+		Campfire currentCampfire = null;
+		try
+		{
+			currentCampfire = MapHandler.CurrentCampfire;
+		}
+		catch
+		{
+		}
+		if (currentCampfire == null || !currentCampfire.Lit)
+		{
+			return;
+		}
+		int campfireId = currentCampfire.GetInstanceID();
+		if (_grantedCampfireCompassIds.Contains(campfireId) || _restoredCheckpointCampfireIds.Contains(campfireId))
+		{
+			return;
+		}
+		if (_orbFogHandler.isMoving || _orbFogHandler.currentWaitTime > 0.2f)
+		{
+			_restoredCheckpointCampfireIds.Add(campfireId);
+			return;
+		}
+		ScheduleFogDelayAfterCampfire(currentCampfire);
+		_restoredCheckpointCampfireIds.Add(campfireId);
+		Logger.LogInfo($"[{PluginName}] Restored fog delay from lit checkpoint campfire: {currentCampfire.name}.");
+	}
+
+	private static CharacterAfflictions.STATUSTYPE GetFogSuppressionStatusType(Character character)
+	{
+		return character?.data != null && character.data.isSkeleton ? CharacterAfflictions.STATUSTYPE.Injury : CharacterAfflictions.STATUSTYPE.Cold;
+	}
+
+	private static float GetSuppressionTransferAmount(float pendingDebt, float currentStatus)
+	{
+		if (pendingDebt <= 0f || currentStatus <= 0f)
+		{
+			return 0f;
+		}
+		float chunkTransfer = Mathf.Floor(pendingDebt / StatusChunkSize) * StatusChunkSize;
+		if (chunkTransfer >= StatusChunkSize)
+		{
+			return chunkTransfer;
+		}
+		return pendingDebt < StatusChunkSize ? pendingDebt : 0f;
 	}
 
 	private void TryCleanupGeneratedBackupFile()
@@ -2089,22 +3486,108 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return;
 		}
+		ScheduleFogDelayAfterCampfire(campfire);
 		GrantCompassToAllPlayers($"campfire-{campfireId}");
 	}
 
-	private static void ZeroColdStatusArrayField(CharacterAfflictions afflictions, string fieldName, int index)
+	private void ScheduleFogDelayAfterCampfire(Campfire campfire)
 	{
-		try
+		if (campfire == null)
 		{
-			FieldInfo fieldInfo = typeof(CharacterAfflictions).GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-			float[] statusArray = fieldInfo?.GetValue(afflictions) as float[];
-			if (statusArray != null && index >= 0 && index < statusArray.Length)
+			return;
+		}
+		if (!TryResolveCampfireFogOriginId(campfire, out int delayedOriginId))
+		{
+			return;
+		}
+		_delayedFogOriginId = delayedOriginId;
+		_fogHiddenBufferTimer = 0f;
+		_fogDelayTimer = 0f;
+		_initialDelayCompleted = HiddenFogDelayBufferSeconds <= 0f && (FogDelay == null || FogDelay.Value <= 0f);
+		if (_orbFogHandler != null)
+		{
+			if (_orbFogHandler.currentID != delayedOriginId)
 			{
-				statusArray[index] = 0f;
+				_orbFogHandler.SetFogOrigin(delayedOriginId);
+				EnsureFogCoverage(_orbFogHandler);
+				SyncFogOriginToGuests();
+			}
+			_orbFogHandler.isMoving = false;
+			_orbFogHandler.currentWaitTime = 0f;
+			_orbFogHandler.speed = 0f;
+			_orbFogHandler.hasArrived = false;
+			TryNormalizeCalderaFogStage(forceResetCurrentSize: true);
+			if (_orbFogHandler.currentID == delayedOriginId && _initialDelayCompleted)
+			{
+				StartFogMovement();
 			}
 		}
-		catch
+		float configuredDelay = FogDelay?.Value ?? DefaultFogDelaySeconds;
+		Logger.LogInfo($"[{PluginName}] Applied hidden fog buffer {HiddenFogDelayBufferSeconds:F1}s and configured delay {configuredDelay:F1}s after lighting campfire. Next origin: {delayedOriginId}.");
+	}
+
+	private bool TryResolveCampfireFogOriginId(Campfire campfire, out int delayedOriginId)
+	{
+		delayedOriginId = -1;
+		if (campfire == null)
 		{
+			return false;
 		}
+		int availableOriginCount = GetAvailableFogOriginCount();
+		if (availableOriginCount <= 0)
+		{
+			Logger.LogWarning($"[{PluginName}] Unable to resolve fog origin after lighting campfire because no fog origins were found.");
+			return false;
+		}
+		if ((int)campfire.advanceToSegment >= availableOriginCount)
+		{
+			Segment advancedSegment = campfire.advanceToSegment;
+			if (!ShouldUseCustomFogPositionForSegment(advancedSegment))
+			{
+				_pendingSyntheticFogSegmentId = -1;
+				delayedOriginId = availableOriginCount - 1;
+				Logger.LogInfo($"[{PluginName}] Synthetic fog position for segment {(int)advancedSegment} ({advancedSegment}) is disabled by config. Campfire={campfire.name}, fallbackOrigin={delayedOriginId}.");
+				return delayedOriginId >= 0;
+			}
+			_pendingSyntheticFogSegmentId = (int)advancedSegment;
+			delayedOriginId = availableOriginCount - 1;
+			Logger.LogInfo($"[{PluginName}] Armed synthetic fog stage for segment {(int)advancedSegment} ({advancedSegment}) because only {availableOriginCount} real fog origins are available. Campfire={campfire.name}, fallbackOrigin={delayedOriginId}.");
+			return delayedOriginId >= 0;
+		}
+		_pendingSyntheticFogSegmentId = -1;
+		int currentOriginId = _orbFogHandler != null ? _orbFogHandler.currentID : -1;
+		TryMapSegmentToFogOriginId(campfire.advanceToSegment, availableOriginCount, out int advanceOriginId);
+		delayedOriginId = advanceOriginId;
+		int currentSceneSegmentId = -1;
+		int sceneOriginId = -1;
+		MapHandler mapHandler = Singleton<MapHandler>.Instance;
+		if (mapHandler != null)
+		{
+			currentSceneSegmentId = (int)MapHandler.CurrentSegmentNumber;
+			TryMapSegmentToFogOriginId(MapHandler.CurrentSegmentNumber, availableOriginCount, out sceneOriginId);
+			if (sceneOriginId > delayedOriginId)
+			{
+				delayedOriginId = sceneOriginId;
+			}
+		}
+		bool sceneAdvancedBeyondCurrentOrigin = currentOriginId >= 0 && currentSceneSegmentId > currentOriginId;
+		bool campfireAdvancedBeyondCurrentOrigin = currentOriginId >= 0 && (int)campfire.advanceToSegment > currentOriginId;
+		if (currentOriginId >= 0 && delayedOriginId <= currentOriginId && (sceneAdvancedBeyondCurrentOrigin || campfireAdvancedBeyondCurrentOrigin))
+		{
+			int fallbackOriginId = Mathf.Min(currentOriginId + 1, availableOriginCount - 1);
+			if (fallbackOriginId > delayedOriginId)
+			{
+				delayedOriginId = fallbackOriginId;
+			}
+		}
+		if (currentOriginId >= 0 && delayedOriginId <= currentOriginId && (sceneAdvancedBeyondCurrentOrigin || campfireAdvancedBeyondCurrentOrigin))
+		{
+			Logger.LogWarning($"[{PluginName}] Fog origin did not advance after lighting campfire. availableOrigins={availableOriginCount}, currentOrigin={currentOriginId}, sceneSegment={currentSceneSegmentId}, campfireAdvance={(int)campfire.advanceToSegment} ({campfire.advanceToSegment}), resolvedOrigin={delayedOriginId}, campfireName={campfire.name}.");
+		}
+		else
+		{
+			Logger.LogInfo($"[{PluginName}] Resolved fog origin after lighting campfire. availableOrigins={availableOriginCount}, currentOrigin={currentOriginId}, sceneSegment={currentSceneSegmentId}, campfireAdvance={(int)campfire.advanceToSegment} ({campfire.advanceToSegment}), resolvedOrigin={delayedOriginId}, campfireName={campfire.name}.");
+		}
+		return delayedOriginId >= 0;
 	}
 }
