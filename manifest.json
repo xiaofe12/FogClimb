@@ -1,8 +1,8 @@
 {
   "name": "FogClimb",
-  "version_number": "1.0.1",
+  "version_number": "1.1.1",
   "website_url": "https://github.com/Thanks/FogClimb",
-  "description": "Host-only PEAK fog climb mode. The host syncs fog movement, compass rewards, HUD, and fog-only cold handling for the whole room.",
+  "description": "Host-only PEAK fog climb mode with synced fog, compass rewards, HUD, and fog-only cold handling. Guests do not need to install it.",
   "dependencies": [
     "BepInEx-BepInExPack_PEAK-5.4.75301"
   ]

@@ -25,11 +25,12 @@ public sealed class Plugin : BaseUnityPlugin
 	{
 		ModEnabled,
 		FogColdSuppression,
+		NightColdEnabled,
 		FogSpeed,
 		FogDelay,
-		CalderaFogPosition,
-		KilnFogPosition,
+		CompassEnabled,
 		CompassHotkey,
+		FogPauseHotkey,
 		FogUiEnabled,
 		FogUiX,
 		FogUiY,
@@ -40,7 +41,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	public const string PluginName = "FogClimb";
 
-	public const string PluginVersion = "1.0.1";
+	public const string PluginVersion = "1.1.1";
 
 	private const float DefaultVanillaFogSpeed = 0.3f;
 
@@ -50,17 +51,17 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private const float MinFogSpeed = 0.3f;
 
-	private const float MaxFogSpeed = 5f;
+	private const float MaxFogSpeed = 20f;
 
 	private const float MinFogDelaySeconds = 0f;
 
-	private const float MaxFogDelaySeconds = 150f;
+	private const float MaxFogDelaySeconds = 1000f;
 
 	private const float DefaultFogUiX = 60f;
 
-	private const float DefaultFogUiY = 16f;
+	private const float DefaultFogUiY = 0f;
 
-	private const float DefaultFogUiScale = 1.2f;
+	private const float DefaultFogUiScale = 0.9f;
 
 	private const float MinFogUiX = -400f;
 
@@ -88,6 +89,14 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private const float FogColdPerSecond = 0.0105f;
 
+	private const float NightColdFallbackPerSecond = 0.008f;
+
+	private const float NightColdFallbackSyncIntervalSeconds = 0.5f;
+
+	private const float NightColdFallbackProbeSeconds = 2.5f;
+
+	private const float NightColdVanillaWorkingDeltaThreshold = 0.0015f;
+
 	private const float StatusChunkSize = 0.025f;
 
 	private const float StalledFogResumeDelayRatio = 0.02f;
@@ -96,35 +105,23 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private const float MaxStalledFogResumeDelaySeconds = 8f;
 
-	private const float HiddenFogDelayBufferSeconds = 5f;
-
-	private const float OversizedFogSizeThreshold = 3500f;
-
-	private const float CalderaFogMinStartSize = 1100f;
-
-	private const float CalderaFogMaxStartSize = 2200f;
-
-	private const float CalderaFogMinVerticalOffset = 520f;
-
-	private const float CalderaFogMaxVerticalOffset = 760f;
-
-	private const float CalderaFogVerticalOffsetRatio = 0.4f;
-
-	private const float TheKilnFogMinStartSize = 850f;
-
-	private const float TheKilnFogMaxStartSize = 1800f;
+	private const float HiddenFogDelayBufferSeconds = 10f;
 
 	private const float PeakFogMinStartSize = 650f;
 
 	private const float PeakFogMaxStartSize = 1400f;
 
-	private const KeyCode HiddenNightTestHotkey = KeyCode.F8;
+	private const float PeakVerticalFogStopHeight = 1800f;
+
+	private const float FogArrivalStopSize = 30f;
+
+	private const KeyCode HiddenNightTestHotkey = KeyCode.LeftBracket;
 
 	private const float HiddenNightTestHoldSeconds = 5f;
 
 	private const float FallbackNightTimeNormalized = 0.85f;
 
-	private const float FogUiWidth = 920f;
+	private const float FogUiWidth = 1360f;
 
 	private const float FogUiHeight = 30f;
 
@@ -142,12 +139,56 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private const string CompassLobbyNoticeKeyColor = "#FF3B30";
 
+	private const string FogUiSpeedLabelColor = "#8EC5FF";
+
+	private const string FogUiSpeedValueColor = "#D6F1FF";
+
+	private const string FogUiWaitLabelColor = "#F2C75C";
+
+	private const string FogUiWaitValueColor = "#FFE8A3";
+
+	private const string FogUiCountdownLabelColor = "#FF8A5B";
+
+	private const string FogUiCountdownValueColor = "#FFD2B8";
+
+	private const string FogUiCountdownDangerLabelColor = "#FF2D2D";
+
+	private const string FogUiCountdownDangerValueColor = "#FFC0C0";
+
+	private const string FogUiDelayCountdownStartLabelColor = "#FF8A8A";
+
+	private const string FogUiDelayCountdownStartValueColor = "#FFD6D6";
+
+	private const string FogUiDelayCountdownEndLabelColor = "#7A0000";
+
+	private const string FogUiDelayCountdownEndValueColor = "#B31212";
+
+	private const string FogUiStateLabelColor = "#A8E0A0";
+
+	private const string FogUiStateRunningColor = "#B5FFB8";
+
+	private const string FogUiStatePausedColor = "#FFC37D";
+
+	private const string FogUiStateWaitingColor = "#FFE08A";
+
+	private const string FogUiStateSyncingColor = "#A3D2FF";
+
+	private const string FogUiHintLabelColor = "#B7C0CC";
+
+	private const string FogUiHintValueColor = "#E2EAF3";
+
+	private const string FogUiNightEnabledColor = "#9FFFA8";
+
+	private const string FogUiNightDisabledColor = "#FFB3B3";
+
 	// Manual entry point for adjusting the granted compass item when auto-detection is wrong.
 	private static readonly ushort CompassItemIdOverride = 0;
 
 	private const string CompassNameKeyword = "Compass";
 
 	private const string ModConfigPluginGuid = "com.github.PEAKModding.PEAKLib.ModConfig";
+
+	private const string CanonicalConfigSectionName = "Fog";
 
 	private const string NetworkInstallStateKey = "FogClimb.Enabled";
 
@@ -166,6 +207,8 @@ public sealed class Plugin : BaseUnityPlugin
 	private static readonly FieldInfo OrbFogHandlerSphereField = typeof(OrbFogHandler).GetField("sphere", InstanceBindingFlags);
 
 	private static readonly int StatusTypeCount = Enum.GetNames(typeof(CharacterAfflictions.STATUSTYPE)).Length;
+
+	private static readonly string[] DayNightTimeMemberCandidates = new string[5] { "currentTime", "time", "timeOfDay", "timeNormalized", "cycleTime" };
 
 	private static int _localFogStatusSuppressionDepth;
 
@@ -195,6 +238,8 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private float _lastCompassGrantSyncTime = -CompassGrantSyncIntervalSeconds;
 
+	private float _lastNightColdFallbackSyncTime = -NightColdFallbackSyncIntervalSeconds;
+
 	private bool _lastHadFogAuthority;
 
 	private bool _lastModEnabledState;
@@ -219,6 +264,10 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private bool _hiddenNightTestTriggeredThisHold;
 
+	private bool _fogPaused;
+
+	private bool _isApplyingNightColdFallbackLocal;
+
 	private readonly HashSet<int> _grantedCampfireCompassIds = new HashSet<int>();
 
 	private readonly HashSet<int> _restoredCheckpointCampfireIds = new HashSet<int>();
@@ -226,6 +275,8 @@ public sealed class Plugin : BaseUnityPlugin
 	private readonly Dictionary<int, int> _playerCompassGrantCounts = new Dictionary<int, int>();
 
 	private readonly Dictionary<int, float> _remoteFogSuppressionDebt = new Dictionary<int, float>();
+
+	private readonly Dictionary<int, NightColdProbeState> _nightColdProbeStates = new Dictionary<int, NightColdProbeState>();
 
 	private Item _compassItem;
 
@@ -263,21 +314,32 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private float _syntheticFogStartSize;
 
+	private sealed class NightColdProbeState
+	{
+		public float LastStatus;
+
+		public float LastSampleTime;
+
+		public float NoIncreaseDuration;
+	}
+
 	internal static Plugin Instance { get; private set; }
 
 	internal static ConfigEntry<bool> ModEnabled { get; private set; }
 
 	internal static ConfigEntry<bool> FogColdSuppression { get; private set; }
 
+	internal static ConfigEntry<bool> NightColdEnabled { get; private set; }
+
 	internal static ConfigEntry<float> FogSpeed { get; private set; }
 
 	internal static ConfigEntry<float> FogDelay { get; private set; }
 
-	internal static ConfigEntry<bool> CalderaFogPosition { get; private set; }
-
-	internal static ConfigEntry<bool> KilnFogPosition { get; private set; }
+	internal static ConfigEntry<bool> CompassEnabled { get; private set; }
 
 	internal static ConfigEntry<KeyCode> CompassHotkey { get; private set; }
+
+	internal static ConfigEntry<KeyCode> FogPauseHotkey { get; private set; }
 
 	internal static ConfigEntry<bool> FogUiEnabled { get; private set; }
 
@@ -319,18 +381,19 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private void InitializeConfig(bool isChineseLanguage)
 	{
-		string sectionName = GetSectionName(isChineseLanguage);
-		ModEnabled = Config.Bind(sectionName, GetKeyName(ConfigKey.ModEnabled, isChineseLanguage), true, CreateConfigDescription(ConfigKey.ModEnabled, isChineseLanguage));
-		FogColdSuppression = Config.Bind(sectionName, GetKeyName(ConfigKey.FogColdSuppression, isChineseLanguage), true, CreateConfigDescription(ConfigKey.FogColdSuppression, isChineseLanguage));
-		FogSpeed = Config.Bind(sectionName, GetKeyName(ConfigKey.FogSpeed, isChineseLanguage), DefaultFogSpeed, CreateConfigDescription(ConfigKey.FogSpeed, isChineseLanguage));
-		FogDelay = Config.Bind(sectionName, GetKeyName(ConfigKey.FogDelay, isChineseLanguage), DefaultFogDelaySeconds, CreateConfigDescription(ConfigKey.FogDelay, isChineseLanguage));
-		CalderaFogPosition = Config.Bind(sectionName, GetKeyName(ConfigKey.CalderaFogPosition, isChineseLanguage), false, CreateConfigDescription(ConfigKey.CalderaFogPosition, isChineseLanguage));
-		KilnFogPosition = Config.Bind(sectionName, GetKeyName(ConfigKey.KilnFogPosition, isChineseLanguage), false, CreateConfigDescription(ConfigKey.KilnFogPosition, isChineseLanguage));
-		CompassHotkey = Config.Bind(sectionName, GetKeyName(ConfigKey.CompassHotkey, isChineseLanguage), KeyCode.G, CreateConfigDescription(ConfigKey.CompassHotkey, isChineseLanguage));
-		FogUiEnabled = Config.Bind(sectionName, GetKeyName(ConfigKey.FogUiEnabled, isChineseLanguage), true, CreateConfigDescription(ConfigKey.FogUiEnabled, isChineseLanguage));
-		FogUiX = Config.Bind(sectionName, GetKeyName(ConfigKey.FogUiX, isChineseLanguage), DefaultFogUiX, CreateConfigDescription(ConfigKey.FogUiX, isChineseLanguage));
-		FogUiY = Config.Bind(sectionName, GetKeyName(ConfigKey.FogUiY, isChineseLanguage), DefaultFogUiY, CreateConfigDescription(ConfigKey.FogUiY, isChineseLanguage));
-		FogUiScale = Config.Bind(sectionName, GetKeyName(ConfigKey.FogUiScale, isChineseLanguage), DefaultFogUiScale, CreateConfigDescription(ConfigKey.FogUiScale, isChineseLanguage));
+		string sectionName = GetConfigSectionName();
+		ModEnabled = Config.Bind(sectionName, GetConfigKeyName(ConfigKey.ModEnabled), true, CreateConfigDescription(ConfigKey.ModEnabled, isChineseLanguage));
+		FogColdSuppression = Config.Bind(sectionName, GetConfigKeyName(ConfigKey.FogColdSuppression), true, CreateConfigDescription(ConfigKey.FogColdSuppression, isChineseLanguage));
+		NightColdEnabled = Config.Bind(sectionName, GetConfigKeyName(ConfigKey.NightColdEnabled), true, CreateConfigDescription(ConfigKey.NightColdEnabled, isChineseLanguage));
+		FogSpeed = Config.Bind(sectionName, GetConfigKeyName(ConfigKey.FogSpeed), DefaultFogSpeed, CreateConfigDescription(ConfigKey.FogSpeed, isChineseLanguage));
+		FogDelay = Config.Bind(sectionName, GetConfigKeyName(ConfigKey.FogDelay), DefaultFogDelaySeconds, CreateConfigDescription(ConfigKey.FogDelay, isChineseLanguage));
+		CompassEnabled = Config.Bind(sectionName, GetConfigKeyName(ConfigKey.CompassEnabled), false, CreateConfigDescription(ConfigKey.CompassEnabled, isChineseLanguage));
+		CompassHotkey = Config.Bind(sectionName, GetConfigKeyName(ConfigKey.CompassHotkey), KeyCode.G, CreateConfigDescription(ConfigKey.CompassHotkey, isChineseLanguage));
+		FogPauseHotkey = Config.Bind(sectionName, GetConfigKeyName(ConfigKey.FogPauseHotkey), KeyCode.Y, CreateConfigDescription(ConfigKey.FogPauseHotkey, isChineseLanguage));
+		FogUiEnabled = Config.Bind(sectionName, GetConfigKeyName(ConfigKey.FogUiEnabled), true, CreateConfigDescription(ConfigKey.FogUiEnabled, isChineseLanguage));
+		FogUiX = Config.Bind(sectionName, GetConfigKeyName(ConfigKey.FogUiX), DefaultFogUiX, CreateConfigDescription(ConfigKey.FogUiX, isChineseLanguage));
+		FogUiY = Config.Bind(sectionName, GetConfigKeyName(ConfigKey.FogUiY), DefaultFogUiY, CreateConfigDescription(ConfigKey.FogUiY, isChineseLanguage));
+		FogUiScale = Config.Bind(sectionName, GetConfigKeyName(ConfigKey.FogUiScale), DefaultFogUiScale, CreateConfigDescription(ConfigKey.FogUiScale, isChineseLanguage));
 		MigrateLocalizedConfigEntries();
 		ClampConfigValues();
 	}
@@ -358,11 +421,12 @@ public sealed class Plugin : BaseUnityPlugin
 		bool migratedAnyValue = false;
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(ModEnabled, ConfigKey.ModEnabled, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogColdSuppression, ConfigKey.FogColdSuppression, orphanedEntries);
+		migratedAnyValue |= TryMigrateLocalizedConfigValue(NightColdEnabled, ConfigKey.NightColdEnabled, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogSpeed, ConfigKey.FogSpeed, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogDelay, ConfigKey.FogDelay, orphanedEntries);
-		migratedAnyValue |= TryMigrateLocalizedConfigValue(CalderaFogPosition, ConfigKey.CalderaFogPosition, orphanedEntries);
-		migratedAnyValue |= TryMigrateLocalizedConfigValue(KilnFogPosition, ConfigKey.KilnFogPosition, orphanedEntries);
+		migratedAnyValue |= TryMigrateLocalizedConfigValue(CompassEnabled, ConfigKey.CompassEnabled, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(CompassHotkey, ConfigKey.CompassHotkey, orphanedEntries);
+		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogPauseHotkey, ConfigKey.FogPauseHotkey, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogUiEnabled, ConfigKey.FogUiEnabled, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogUiX, ConfigKey.FogUiX, orphanedEntries);
 		migratedAnyValue |= TryMigrateLocalizedConfigValue(FogUiY, ConfigKey.FogUiY, orphanedEntries);
@@ -379,32 +443,36 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return false;
 		}
+		bool migrated = false;
 		foreach (ConfigDefinition aliasDefinition in GetAliasDefinitions(configKey))
 		{
 			if (DefinitionsEqual(aliasDefinition, entry.Definition) || !orphanedEntries.Contains(aliasDefinition))
 			{
 				continue;
 			}
-			object orphanedValue = orphanedEntries[aliasDefinition];
-			if (orphanedValue != null)
+			if (!migrated)
 			{
-				entry.SetSerializedValue(orphanedValue.ToString());
+				object orphanedValue = orphanedEntries[aliasDefinition];
+				if (orphanedValue != null)
+				{
+					entry.SetSerializedValue(orphanedValue.ToString());
+				}
+				migrated = true;
 			}
 			orphanedEntries.Remove(aliasDefinition);
-			return true;
 		}
-		return false;
+		return migrated;
 	}
 
 	private static IEnumerable<ConfigDefinition> GetAliasDefinitions(ConfigKey configKey)
 	{
-		string englishSection = GetSectionName(isChineseLanguage: false);
+		string canonicalSection = GetConfigSectionName();
 		string chineseSection = GetSectionName(isChineseLanguage: true);
-		string englishKey = GetKeyName(configKey, isChineseLanguage: false);
+		string canonicalKey = GetConfigKeyName(configKey);
 		string chineseKey = GetKeyName(configKey, isChineseLanguage: true);
-		yield return new ConfigDefinition(englishSection, englishKey);
-		yield return new ConfigDefinition(englishSection, chineseKey);
-		yield return new ConfigDefinition(chineseSection, englishKey);
+		yield return new ConfigDefinition(canonicalSection, canonicalKey);
+		yield return new ConfigDefinition(canonicalSection, chineseKey);
+		yield return new ConfigDefinition(chineseSection, canonicalKey);
 		yield return new ConfigDefinition(chineseSection, chineseKey);
 	}
 
@@ -454,7 +522,9 @@ public sealed class Plugin : BaseUnityPlugin
 		bool matchesLegacyPresetC = Approximately(FogUiX.Value, 4f) && Approximately(FogUiY.Value, 4f) && Approximately(FogUiScale.Value, 1.1f);
 		bool matchesLegacyPresetD = Approximately(FogUiX.Value, 60f) && Approximately(FogUiY.Value, -200f) && Approximately(FogUiScale.Value, 1.1f);
 		bool matchesPreviousFogClimbDefault = Approximately(FogUiX.Value, 60f) && Approximately(FogUiY.Value, -200f) && Approximately(FogUiScale.Value, 1f);
-		if (matchesLegacyPresetA || matchesLegacyPresetB || matchesLegacyPresetC || matchesLegacyPresetD || matchesPreviousFogClimbDefault)
+		bool matchesOlderFogClimbDefault = Approximately(FogUiX.Value, 60f) && Approximately(FogUiY.Value, 16f) && Approximately(FogUiScale.Value, 1.2f);
+		bool matchesCurrentFogClimbDefault = Approximately(FogUiX.Value, 60f) && Approximately(FogUiY.Value, 0f) && Approximately(FogUiScale.Value, 1.2f);
+		if (matchesLegacyPresetA || matchesLegacyPresetB || matchesLegacyPresetC || matchesLegacyPresetD || matchesPreviousFogClimbDefault || matchesOlderFogClimbDefault || matchesCurrentFogClimbDefault)
 		{
 			FogUiX.Value = DefaultFogUiX;
 			FogUiY.Value = DefaultFogUiY;
@@ -497,6 +567,7 @@ public sealed class Plugin : BaseUnityPlugin
 		HandleLanguageChangeIfNeeded();
 		HandleFogUiConfigChanges();
 		HandleManualCompassHotkey();
+		HandleFogPauseHotkey();
 		HandleHiddenNightTestHotkey();
 		if (!modEnabled)
 		{
@@ -515,6 +586,10 @@ public sealed class Plugin : BaseUnityPlugin
 			SyncFogStateToGuestsIfNeeded();
 			SyncRemoteStatusSuppressionIfNeeded();
 			SyncCompassGrantsToPlayersIfNeeded();
+		}
+		if (HasFogAuthority())
+		{
+			SyncNightColdFallbackIfNeeded();
 		}
 		UpdateFogUi();
 		UpdateCompassLobbyNotice();
@@ -694,9 +769,16 @@ public sealed class Plugin : BaseUnityPlugin
 			return;
 		}
 		ClampConfigValues();
+		if (IsFogRemovedInCurrentScene())
+		{
+			ClearSyntheticFogStage();
+			_pendingSyntheticFogSegmentId = -1;
+			_delayedFogOriginId = -1;
+			ApplyRemovedFogState();
+			return;
+		}
 		TryAlignFogOriginToCurrentSegment();
 		TryUpdateSyntheticFogStage();
-		TryNormalizeCalderaFogStage(forceResetCurrentSize: false);
 		UpdateTrackedFogOrigin();
 		if (ShouldAutoCompleteDelayForCurrentOrigin(_orbFogHandler))
 		{
@@ -739,6 +821,11 @@ public sealed class Plugin : BaseUnityPlugin
 					StartFogMovement();
 				}
 			}
+			return;
+		}
+		if (_fogPaused)
+		{
+			ApplyPausedFogState(syncImmediately: false);
 			return;
 		}
 		_orbFogHandler.speed = FogSpeed.Value;
@@ -943,129 +1030,75 @@ public sealed class Plugin : BaseUnityPlugin
 		return Mathf.Clamp(computedSize, minSize, maxSize);
 	}
 
-	private float ComputeCalderaFogStartSize(Vector3 fogPoint)
+	private static bool ShouldUseCustomFogPositionForSegment(Segment segment)
 	{
-		float previousOriginSize = 900f;
-		if (!TryGetPreviousRealFogOriginSize(out previousOriginSize))
-		{
-			previousOriginSize = 900f;
-		}
-		float baseSize = previousOriginSize * 1.05f;
-		return ComputeFogStartSizeForStage(Segment.Caldera, fogPoint, baseSize, CalderaFogMinStartSize, CalderaFogMaxStartSize, 120f, 95f);
+		return segment >= Segment.Peak;
 	}
 
-	private bool TryResolveCalderaFogPoint(out Vector3 fogPoint, out string pointDescription)
+	private static bool ShouldRemoveFogForSegment(Segment segment)
 	{
-		fogPoint = Vector3.zero;
-		pointDescription = string.Empty;
-		if (!TryResolveFogPointForCurrentOrigin(out Vector3 originalFogPoint, out string originalDescription))
+		return segment == Segment.Caldera || segment == Segment.TheKiln;
+	}
+
+	private static bool TryGetCurrentGameplaySegment(out Segment segment)
+	{
+		segment = Segment.Beach;
+		if (!IsGameplayFogScene(SceneManager.GetActiveScene()) || LoadingScreenHandler.loading)
 		{
 			return false;
 		}
-		if (!TryResolveFogStageCoverageAnchor(Segment.Caldera, out Vector3 stageAnchor, out string anchorDescription))
+		MapHandler mapHandler = Singleton<MapHandler>.Instance;
+		if (mapHandler == null)
 		{
-			fogPoint = originalFogPoint;
-			pointDescription = originalDescription;
-			return true;
+			return false;
 		}
-		float sourceVerticalOffset = originalFogPoint.y - stageAnchor.y;
-		float verticalDirection = sourceVerticalOffset >= 0f ? 1f : -1f;
-		float targetVerticalOffset = Mathf.Clamp(Mathf.Abs(sourceVerticalOffset) * CalderaFogVerticalOffsetRatio, CalderaFogMinVerticalOffset, CalderaFogMaxVerticalOffset);
-		fogPoint = new Vector3(stageAnchor.x, stageAnchor.y + verticalDirection * targetVerticalOffset, stageAnchor.z);
-		pointDescription = $"{anchorDescription} vertical";
+		segment = MapHandler.CurrentSegmentNumber;
 		return true;
 	}
 
-	private void TryNormalizeCalderaFogStage(bool forceResetCurrentSize)
+	private static bool IsFogRemovedInCurrentScene()
 	{
-		if (_orbFogHandler == null || !HasFogAuthority())
+		return TryGetCurrentGameplaySegment(out Segment segment) && ShouldRemoveFogForSegment(segment);
+	}
+
+	private void ApplyRemovedFogState()
+	{
+		if (_orbFogHandler == null)
 		{
 			return;
 		}
-		if (!IsCalderaFogPositionEnabled())
-		{
-			return;
-		}
-		if ((int)MapHandler.CurrentSegmentNumber != (int)Segment.Caldera || _activeSyntheticFogSegmentId >= GetAvailableFogOriginCount())
-		{
-			return;
-		}
-		int availableOriginCount = GetAvailableFogOriginCount();
-		if (availableOriginCount <= 0)
-		{
-			return;
-		}
-		int reusableOriginId = availableOriginCount - 1;
-		if (_orbFogHandler.currentID != reusableOriginId)
-		{
-			return;
-		}
-		if (!forceResetCurrentSize && _orbFogHandler.currentSize > 30f && _orbFogHandler.currentSize < OversizedFogSizeThreshold)
-		{
-			return;
-		}
-		if (!TryResolveCalderaFogPoint(out Vector3 fogPoint, out string pointDescription))
-		{
-			return;
-		}
-		float desiredSize = ComputeCalderaFogStartSize(fogPoint);
-		FogSphere sphere = _fogSphere ?? ResolveFogSphere(_orbFogHandler);
-		if (sphere != null)
-		{
-			_fogSphere = sphere;
-			if (!sphere.gameObject.activeSelf)
-			{
-				sphere.gameObject.SetActive(true);
-			}
-			sphere.fogPoint = fogPoint;
-			sphere.currentSize = desiredSize;
-		}
+		_orbFogHandler.speed = 0f;
+		_orbFogHandler.isMoving = false;
+		_orbFogHandler.currentWaitTime = 0f;
+		_orbFogHandler.hasArrived = false;
 		_orbFogHandler.currentStartHeight = float.NegativeInfinity;
 		_orbFogHandler.currentStartForward = float.NegativeInfinity;
-		_orbFogHandler.currentSize = desiredSize;
-		_orbFogHandler.hasArrived = false;
-		if (forceResetCurrentSize)
+		_orbFogHandler.currentSize = 0f;
+		FogSphere sphere = _fogSphere ?? ResolveFogSphere(_orbFogHandler);
+		if (sphere == null)
 		{
-			_orbFogHandler.currentWaitTime = 0f;
+			return;
 		}
-		Logger.LogInfo($"[{PluginName}] Normalized Caldera fog size to {desiredSize:F1} using {pointDescription}. forceReset={forceResetCurrentSize}, moving={_orbFogHandler.isMoving}.");
-	}
-
-	private static bool IsCalderaFogPositionEnabled()
-	{
-		return CalderaFogPosition != null && CalderaFogPosition.Value;
-	}
-
-	private static bool IsKilnFogPositionEnabled()
-	{
-		return KilnFogPosition != null && KilnFogPosition.Value;
-	}
-
-	private static bool ShouldUseCustomFogPositionForSegment(Segment segment)
-	{
-		if (segment >= Segment.TheKiln)
+		_fogSphere = sphere;
+		sphere.currentSize = 0f;
+		if (sphere.gameObject.activeSelf)
 		{
-			return IsKilnFogPositionEnabled();
+			sphere.gameObject.SetActive(false);
 		}
-		if (segment == Segment.Caldera)
-		{
-			return IsCalderaFogPositionEnabled();
-		}
-		return false;
 	}
 
 	private bool IsLateGameFogColdSuppressionActive()
 	{
 		if (!IsGameplayFogScene(SceneManager.GetActiveScene()) || LoadingScreenHandler.loading)
 		{
-			return _activeSyntheticFogSegmentId >= (int)Segment.TheKiln;
+			return _activeSyntheticFogSegmentId >= (int)Segment.Caldera;
 		}
 		MapHandler mapHandler = Singleton<MapHandler>.Instance;
-		if (mapHandler != null && (int)MapHandler.CurrentSegmentNumber >= (int)Segment.TheKiln)
+		if (mapHandler != null && (int)MapHandler.CurrentSegmentNumber >= (int)Segment.Caldera)
 		{
 			return true;
 		}
-		return _activeSyntheticFogSegmentId >= (int)Segment.TheKiln;
+		return _activeSyntheticFogSegmentId >= (int)Segment.Caldera;
 	}
 
 	private void ClearSyntheticFogStage()
@@ -1089,7 +1122,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private void TryAlignFogOriginToCurrentSegment()
 	{
-		if (_orbFogHandler == null || !HasFogAuthority() || _orbFogHandler.isMoving || !TryGetTargetFogOriginId(out int expectedOriginId))
+		if (_orbFogHandler == null || !HasFogAuthority() || _orbFogHandler.isMoving || IsFogRemovedInCurrentScene() || !TryGetTargetFogOriginId(out int expectedOriginId))
 		{
 			return;
 		}
@@ -1226,6 +1259,29 @@ public sealed class Plugin : BaseUnityPlugin
 		return fogSize > 0f;
 	}
 
+	private bool TryBuildPeakVerticalFogStage(Segment syntheticSegment, out Vector3 fogPoint, out float fogSize, out string anchorDescription)
+	{
+		fogPoint = Vector3.zero;
+		fogSize = 0f;
+		anchorDescription = string.Empty;
+		if (syntheticSegment < Segment.Peak)
+		{
+			return false;
+		}
+		if (!TryResolvePeakVerticalFogTargetAnchor(syntheticSegment, out Vector3 targetAnchor, out string targetDescription))
+		{
+			return false;
+		}
+		fogPoint = new Vector3(targetAnchor.x, PeakVerticalFogStopHeight + FogArrivalStopSize, targetAnchor.z);
+		fogSize = ComputePeakVerticalFogStartSize(fogPoint, targetAnchor);
+		if (fogSize <= 0f)
+		{
+			return false;
+		}
+		anchorDescription = $"{targetDescription} vertical-up stop@{PeakVerticalFogStopHeight:F0}";
+		return true;
+	}
+
 	private bool TryResolveSyntheticTargetAnchor(Segment syntheticSegment, out Vector3 targetAnchor, out string targetDescription)
 	{
 		targetAnchor = Vector3.zero;
@@ -1343,22 +1399,86 @@ public sealed class Plugin : BaseUnityPlugin
 		return false;
 	}
 
+	private bool TryResolvePeakVerticalFogAnchor(Segment syntheticSegment, out Vector3 fogPoint, out string anchorDescription)
+	{
+		fogPoint = Vector3.zero;
+		anchorDescription = string.Empty;
+		if (syntheticSegment < Segment.Peak)
+		{
+			return false;
+		}
+		if (!TryResolvePeakVerticalFogTargetAnchor(syntheticSegment, out Vector3 targetAnchor, out string targetDescription))
+		{
+			return false;
+		}
+		fogPoint = new Vector3(targetAnchor.x, PeakVerticalFogStopHeight + FogArrivalStopSize, targetAnchor.z);
+		anchorDescription = $"{targetDescription} vertical-up stop@{PeakVerticalFogStopHeight:F0}";
+		return true;
+	}
+
+	private bool TryResolvePeakVerticalFogTargetAnchor(Segment syntheticSegment, out Vector3 targetAnchor, out string targetDescription)
+	{
+		targetAnchor = Vector3.zero;
+		targetDescription = string.Empty;
+		if (syntheticSegment < Segment.Peak)
+		{
+			return false;
+		}
+		if (TryResolveSyntheticTargetAnchor(syntheticSegment, out targetAnchor, out targetDescription))
+		{
+			return true;
+		}
+		Character localCharacter = Character.localCharacter;
+		if (localCharacter != null)
+		{
+			targetAnchor = localCharacter.Center;
+			targetDescription = "localCharacter";
+			return true;
+		}
+		Character fallbackCharacter = Character.AllCharacters.FirstOrDefault(character => character != null);
+		if (fallbackCharacter == null)
+		{
+			return false;
+		}
+		targetAnchor = fallbackCharacter.Center;
+		targetDescription = "firstCharacter";
+		return true;
+	}
+
 	private float ComputeSyntheticFogStartSize(Segment syntheticSegment, Vector3 fogPoint)
 	{
 		float previousOriginSize = 900f;
 		TryGetPreviousRealFogOriginSize(out previousOriginSize);
-		if (syntheticSegment >= Segment.Peak)
+		float baseSize = previousOriginSize * 0.72f;
+		return ComputeFogStartSizeForStage(syntheticSegment, fogPoint, baseSize, PeakFogMinStartSize, PeakFogMaxStartSize, 130f, 95f);
+	}
+
+	private float ComputePeakVerticalFogStartSize(Vector3 fogPoint, Vector3 targetAnchor)
+	{
+		float previousOriginSize = 900f;
+		TryGetPreviousRealFogOriginSize(out previousOriginSize);
+		float computedSize = Mathf.Max(previousOriginSize * 0.68f, PeakFogMinStartSize);
+		float lowestRelevantY = Mathf.Min(targetAnchor.y, PeakVerticalFogStopHeight - 180f);
+		foreach (Character character in Character.AllCharacters)
 		{
-			float baseSize = previousOriginSize * 0.72f;
-			return ComputeFogStartSizeForStage(syntheticSegment, fogPoint, baseSize, PeakFogMinStartSize, PeakFogMaxStartSize, 130f, 95f);
+			if (character == null || character.data == null || character.data.dead)
+			{
+				continue;
+			}
+			lowestRelevantY = Mathf.Min(lowestRelevantY, character.Center.y);
+			computedSize = Mathf.Max(computedSize, Vector3.Distance(fogPoint, character.Center) + 70f);
 		}
-		float kilnBaseSize = previousOriginSize * 0.95f;
-		return ComputeFogStartSizeForStage(syntheticSegment, fogPoint, kilnBaseSize, TheKilnFogMinStartSize, TheKilnFogMaxStartSize, 140f, 100f);
+		computedSize = Mathf.Max(computedSize, fogPoint.y - lowestRelevantY + 120f);
+		if (TryResolveFogStageCoverageAnchor(Segment.Peak, out Vector3 stageAnchor, out _))
+		{
+			computedSize = Mathf.Max(computedSize, Vector3.Distance(fogPoint, stageAnchor) + 90f);
+		}
+		return Mathf.Clamp(computedSize, PeakFogMinStartSize, PeakFogMaxStartSize);
 	}
 
 	private void TryAutoStartCustomRunFogIfNeeded()
 	{
-		if (_orbFogHandler == null || !HasFogAuthority() || !RunSettings.IsCustomRun)
+		if (_orbFogHandler == null || !HasFogAuthority() || _fogPaused || !RunSettings.IsCustomRun)
 		{
 			return;
 		}
@@ -1379,7 +1499,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private void TryAutoResumeStalledFogMovement()
 	{
-		if (_orbFogHandler == null || !HasFogAuthority() || !_initialDelayCompleted)
+		if (_orbFogHandler == null || !HasFogAuthority() || _fogPaused || !_initialDelayCompleted)
 		{
 			return;
 		}
@@ -1456,30 +1576,105 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private void StartFogMovement()
 	{
-		if (_orbFogHandler == null)
+		if (_orbFogHandler == null || _fogPaused || IsFogRemovedInCurrentScene())
 		{
 			return;
 		}
 		Logger.LogInfo($"[{PluginName}] Starting fog movement. currentOrigin={_orbFogHandler.currentID}, syntheticStage={_activeSyntheticFogSegmentId}, pendingOrigin={_delayedFogOriginId}, currentSize={_orbFogHandler.currentSize:F1}.");
 		ClearPendingCampfireDelayForOrigin(_orbFogHandler.currentID);
 		bool shouldGrantInitialCompass = !_initialCompassGranted && _orbFogHandler.currentID == 0;
-		PhotonView photonView = _orbFogHandler.GetComponent<PhotonView>();
-		if (PhotonNetwork.InRoom && photonView != null)
+		if (!TryInvokeFogStartMovement(_orbFogHandler, out string invocationPath))
 		{
-			photonView.RPC("StartMovingRPC", RpcTarget.All, Array.Empty<object>());
-			if (shouldGrantInitialCompass)
-			{
-				_initialCompassGranted = true;
-				GrantCompassToAllPlayers("initial-delay-ended");
-			}
+			Logger.LogError($"[{PluginName}] Failed to start fog movement because no compatible OrbFogHandler start method was found. currentOrigin={_orbFogHandler.currentID}.");
 			return;
 		}
-		_orbFogHandler.StartMovingRPC();
+		Logger.LogInfo($"[{PluginName}] Fog movement invoked via {invocationPath}.");
+		if (PhotonNetwork.InRoom)
+		{
+			ForceSyncFogStateToGuests();
+		}
 		if (shouldGrantInitialCompass)
 		{
 			_initialCompassGranted = true;
 			GrantCompassToAllPlayers("initial-delay-ended");
 		}
+	}
+
+	private bool TryInvokeFogStartMovement(OrbFogHandler fogHandler, out string invocationPath)
+	{
+		invocationPath = string.Empty;
+		if (fogHandler == null)
+		{
+			return false;
+		}
+		Type fogHandlerType = fogHandler.GetType();
+		MethodInfo startWithoutInfo = fogHandlerType.GetMethod("StartMovingRPC", InstanceBindingFlags, null, Type.EmptyTypes, null);
+		if (TryInvokeFogStartMethod(fogHandler, startWithoutInfo, Array.Empty<object>()))
+		{
+			invocationPath = "StartMovingRPC()";
+			return true;
+		}
+		MethodInfo startWithInfo = fogHandlerType.GetMethod("StartMovingRPC", InstanceBindingFlags, null, new Type[1] { typeof(PhotonMessageInfo) }, null);
+		if (TryInvokeFogStartMethod(fogHandler, startWithInfo, new object[1] { default(PhotonMessageInfo) }))
+		{
+			invocationPath = "StartMovingRPC(PhotonMessageInfo)";
+			return true;
+		}
+		MethodInfo waitToMove = fogHandlerType.GetMethod("WaitToMove", InstanceBindingFlags, null, Type.EmptyTypes, null);
+		if (TryInvokeFogStartMethod(fogHandler, waitToMove, Array.Empty<object>()))
+		{
+			invocationPath = "WaitToMove()";
+			return true;
+		}
+		return false;
+	}
+
+	private bool TryInvokeFogStartMethod(OrbFogHandler fogHandler, MethodInfo method, object[] arguments)
+	{
+		if (fogHandler == null || method == null)
+		{
+			return false;
+		}
+		try
+		{
+			method.Invoke(fogHandler, arguments);
+			return true;
+		}
+		catch (TargetInvocationException ex)
+		{
+			Logger.LogWarning($"[{PluginName}] Fog start method {method.Name} failed: {ex.InnerException?.Message ?? ex.Message}");
+			return false;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogWarning($"[{PluginName}] Fog start method {method.Name} failed: {ex.Message}");
+			return false;
+		}
+	}
+
+	private void ApplyPausedFogState(bool syncImmediately)
+	{
+		if (_orbFogHandler == null)
+		{
+			return;
+		}
+		_orbFogHandler.speed = 0f;
+		_orbFogHandler.isMoving = false;
+		if (syncImmediately)
+		{
+			ForceSyncFogStateToGuests();
+		}
+	}
+
+	private void ForceSyncFogStateToGuests()
+	{
+		if (_orbFogHandler == null || !HasRemotePlayers() || !PhotonNetwork.IsMasterClient)
+		{
+			return;
+		}
+		_lastFogStateSyncTime = -FogStateSyncIntervalSeconds;
+		ResetFogStateSyncSnapshot();
+		SyncFogStateToGuestsIfNeeded();
 	}
 
 	private bool TryGetTargetFogOriginId(out int expectedOriginId)
@@ -1504,6 +1699,10 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return false;
 		}
+		if (ShouldRemoveFogForSegment(MapHandler.CurrentSegmentNumber))
+		{
+			return false;
+		}
 		int availableOriginCount = GetAvailableFogOriginCount();
 		return TryMapSegmentToFogOriginId(MapHandler.CurrentSegmentNumber, availableOriginCount, out expectedOriginId);
 	}
@@ -1518,6 +1717,8 @@ public sealed class Plugin : BaseUnityPlugin
 		_lastHadFogAuthority = hasAuthority;
 		ResetFogStateSyncSnapshot();
 		_remoteFogSuppressionDebt.Clear();
+		_nightColdProbeStates.Clear();
+		_lastNightColdFallbackSyncTime = -NightColdFallbackSyncIntervalSeconds;
 		if (!hasAuthority && PhotonNetwork.InRoom)
 		{
 			RestoreVanillaFogSpeed();
@@ -1580,6 +1781,88 @@ public sealed class Plugin : BaseUnityPlugin
 			|| Mathf.Abs(_orbFogHandler.currentSize - _lastSyncedFogSize) >= FogStateSyncSizeThreshold;
 	}
 
+	private float GetFogStateSyncSizeForGuests()
+	{
+		if (_orbFogHandler == null)
+		{
+			return 0f;
+		}
+		if (IsFogRemovedInCurrentScene())
+		{
+			return 0f;
+		}
+		return TryGetGuestFogSyncOverrideSize(out float overrideSize) ? overrideSize : _orbFogHandler.currentSize;
+	}
+
+	private bool TryGetGuestFogSyncOverrideSize(out float overrideSize)
+	{
+		overrideSize = 0f;
+		if (_orbFogHandler == null)
+		{
+			return false;
+		}
+		if (!TryGetActiveFogSyncReference(out Vector3 customFogPoint, out Segment fogSegment))
+		{
+			return false;
+		}
+		if (!TryResolveFogOriginPoint(_orbFogHandler.currentID, out Vector3 vanillaFogPoint))
+		{
+			return false;
+		}
+		if (Vector3.Distance(vanillaFogPoint, customFogPoint) <= 0.05f)
+		{
+			return false;
+		}
+		if (!TryResolveFogStageCoverageAnchor(fogSegment, out Vector3 syncReferencePoint, out _))
+		{
+			return false;
+		}
+		float hostReferenceDistance = Vector3.Distance(customFogPoint, syncReferencePoint);
+		float vanillaReferenceDistance = Vector3.Distance(vanillaFogPoint, syncReferencePoint);
+		overrideSize = Mathf.Clamp(vanillaReferenceDistance + (_orbFogHandler.currentSize - hostReferenceDistance), FogArrivalStopSize, 6000f);
+		return !Approximately(overrideSize, _orbFogHandler.currentSize);
+	}
+
+	private bool TryGetActiveFogSyncReference(out Vector3 customFogPoint, out Segment fogSegment)
+	{
+		customFogPoint = Vector3.zero;
+		fogSegment = Segment.Beach;
+		if (_orbFogHandler == null)
+		{
+			return false;
+		}
+		int availableOriginCount = GetAvailableFogOriginCount();
+		if (_activeSyntheticFogSegmentId >= availableOriginCount && _activeSyntheticFogSegmentId >= 0)
+		{
+			customFogPoint = _syntheticFogPoint;
+			fogSegment = (Segment)_activeSyntheticFogSegmentId;
+			return customFogPoint.sqrMagnitude > 0.001f;
+		}
+		return false;
+	}
+
+	private bool TryResolveFogOriginPoint(int originId, out Vector3 fogPoint)
+	{
+		fogPoint = Vector3.zero;
+		if (_orbFogHandler == null)
+		{
+			return false;
+		}
+		FogSphereOrigin[] origins = ResolveFogOrigins(_orbFogHandler);
+		if (origins.Length <= 0)
+		{
+			return false;
+		}
+		int resolvedOriginId = Mathf.Clamp(originId, 0, origins.Length - 1);
+		FogSphereOrigin origin = origins[resolvedOriginId] ?? origins.LastOrDefault(candidate => candidate != null);
+		if (origin == null)
+		{
+			return false;
+		}
+		fogPoint = origin.transform.position;
+		return true;
+	}
+
 	private void SyncFogOriginToGuests()
 	{
 		if (_orbFogHandler == null || !HasRemotePlayers() || !PhotonNetwork.IsMasterClient)
@@ -1594,10 +1877,11 @@ public sealed class Plugin : BaseUnityPlugin
 		}
 		try
 		{
+			float syncSize = GetFogStateSyncSizeForGuests();
 			photonView.RPC("RPC_InitFog", RpcTarget.Others, new object[]
 			{
 				_orbFogHandler.currentID,
-				_orbFogHandler.currentSize,
+				syncSize,
 				_orbFogHandler.hasArrived,
 				_orbFogHandler.isMoving
 			});
@@ -1650,12 +1934,13 @@ public sealed class Plugin : BaseUnityPlugin
 		}
 		try
 		{
+			float syncSize = GetFogStateSyncSizeForGuests();
 			if (needsInitSync)
 			{
 				photonView.RPC("RPC_InitFog", RpcTarget.Others, new object[]
 				{
 					_orbFogHandler.currentID,
-					_orbFogHandler.currentSize,
+					syncSize,
 					_orbFogHandler.hasArrived,
 					_orbFogHandler.isMoving
 				});
@@ -1664,7 +1949,7 @@ public sealed class Plugin : BaseUnityPlugin
 			{
 				photonView.RPC("RPCA_SyncFog", RpcTarget.Others, new object[]
 				{
-					_orbFogHandler.currentSize,
+					syncSize,
 					_orbFogHandler.isMoving
 				});
 			}
@@ -1718,6 +2003,368 @@ public sealed class Plugin : BaseUnityPlugin
 		foreach (int staleKey in staleKeys)
 		{
 			_remoteFogSuppressionDebt.Remove(staleKey);
+		}
+	}
+
+	private void SyncNightColdFallbackIfNeeded()
+	{
+		if (!ShouldApplyNightColdFallback())
+		{
+			_nightColdProbeStates.Clear();
+			return;
+		}
+		float now = Time.unscaledTime;
+		if (now - _lastNightColdFallbackSyncTime < NightColdFallbackSyncIntervalSeconds)
+		{
+			return;
+		}
+		_lastNightColdFallbackSyncTime = now;
+		if (!TryIsNightTime(out _))
+		{
+			_nightColdProbeStates.Clear();
+			return;
+		}
+		HashSet<int> activeKeys = new HashSet<int>();
+		foreach (Character character in Character.AllCharacters)
+		{
+			if (!ShouldTrackNightColdFallback(character))
+			{
+				ForgetNightColdProbeState(character);
+				continue;
+			}
+			int key = GetRemoteStatusSuppressionKey(character);
+			if (key == 0)
+			{
+				continue;
+			}
+			activeKeys.Add(key);
+			CharacterAfflictions.STATUSTYPE statusType = GetFogSuppressionStatusType(character);
+			float currentStatus = character.refs?.afflictions != null ? character.refs.afflictions.GetCurrentStatus(statusType) : 0f;
+			if (!_nightColdProbeStates.TryGetValue(key, out NightColdProbeState state))
+			{
+				state = new NightColdProbeState
+				{
+					LastStatus = currentStatus,
+					LastSampleTime = now,
+					NoIncreaseDuration = 0f
+				};
+				_nightColdProbeStates[key] = state;
+				continue;
+			}
+			float elapsed = Mathf.Max(now - state.LastSampleTime, 0f);
+			if (elapsed <= 0.0001f)
+			{
+				continue;
+			}
+			float vanillaDelta = currentStatus - state.LastStatus;
+			if (vanillaDelta > NightColdVanillaWorkingDeltaThreshold)
+			{
+				state.NoIncreaseDuration = 0f;
+			}
+			else
+			{
+				state.NoIncreaseDuration += elapsed;
+			}
+			if (state.NoIncreaseDuration >= NightColdFallbackProbeSeconds && currentStatus < 0.995f)
+			{
+				float fallbackDelta = Mathf.Min(NightColdFallbackPerSecond * elapsed, 1f - currentStatus);
+				if (fallbackDelta > 0f && TryApplyStatusDeltaFromHost(character, statusType, fallbackDelta))
+				{
+					currentStatus += fallbackDelta;
+				}
+			}
+			state.LastStatus = currentStatus;
+			state.LastSampleTime = now;
+		}
+		int[] staleKeys = _nightColdProbeStates.Keys.Where(key => !activeKeys.Contains(key)).ToArray();
+		foreach (int staleKey in staleKeys)
+		{
+			_nightColdProbeStates.Remove(staleKey);
+		}
+	}
+
+	private static bool ShouldApplyNightColdFallback()
+	{
+		return IsModFeatureEnabled()
+			&& IsNightColdFeatureEnabled()
+			&& HasFogAuthority()
+			&& IsNightColdEnabledByOfficialSettings()
+			&& (Instance == null || !Instance.ShouldDisableNightColdInCurrentStage())
+			&& IsGameplayFogScene(SceneManager.GetActiveScene())
+			&& !LoadingScreenHandler.loading;
+	}
+
+	private static bool IsNightColdEnabledByOfficialSettings()
+	{
+		return !IsOfficialNightColdDisabled();
+	}
+
+	private static bool IsOfficialCustomRunActive()
+	{
+		try
+		{
+			return RunSettings.initialized && RunSettings.IsCustomRun;
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+	private static bool IsOfficialMiniRunActive()
+	{
+		try
+		{
+			return RunSettings.initialized && RunSettings.isMiniRun;
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+	private static bool TryGetOfficialRunSetting(RunSettings.SETTINGTYPE settingType, out int value)
+	{
+		value = 0;
+		try
+		{
+			if (!RunSettings.initialized)
+			{
+				return false;
+			}
+			bool forceGetCustomValue = IsOfficialCustomRunActive() || IsOfficialMiniRunActive();
+			value = RunSettings.GetValue(settingType, forceGetCustomValue);
+			return true;
+		}
+		catch
+		{
+			value = 0;
+			return false;
+		}
+	}
+
+	private static bool IsOfficialNightColdDisabled()
+	{
+		if (!IsOfficialCustomRunActive() && !IsOfficialMiniRunActive())
+		{
+			return false;
+		}
+		return TryGetOfficialRunSetting(RunSettings.SETTINGTYPE.ColdNight, out int value) && value <= 0;
+	}
+
+	private static bool ShouldTrackNightColdFallback(Character character)
+	{
+		return character != null
+			&& character.refs?.afflictions != null
+			&& character.data != null
+			&& !character.data.dead
+			&& !character.isBot
+			&& !character.isZombie;
+	}
+
+	private bool ShouldDisableNightColdInCurrentStage()
+	{
+		if (!IsGameplayFogScene(SceneManager.GetActiveScene()) || LoadingScreenHandler.loading)
+		{
+			return _activeSyntheticFogSegmentId >= (int)Segment.Caldera;
+		}
+		MapHandler mapHandler = Singleton<MapHandler>.Instance;
+		if (mapHandler != null && (int)MapHandler.CurrentSegmentNumber >= (int)Segment.Caldera)
+		{
+			return true;
+		}
+		return _activeSyntheticFogSegmentId >= (int)Segment.Caldera;
+	}
+
+	private void ForgetNightColdProbeState(Character character)
+	{
+		int key = GetRemoteStatusSuppressionKey(character);
+		if (key != 0)
+		{
+			_nightColdProbeStates.Remove(key);
+		}
+	}
+
+	private bool TryApplyStatusDeltaFromHost(Character character, CharacterAfflictions.STATUSTYPE statusType, float delta)
+	{
+		if (character == null || delta <= 0f)
+		{
+			return false;
+		}
+		float[] payload = new float[StatusTypeCount];
+		payload[(int)statusType] = delta;
+		try
+		{
+			PhotonView photonView = character.photonView;
+			if (PhotonNetwork.InRoom && photonView != null && photonView.Owner != null && !photonView.IsMine)
+			{
+				photonView.RPC("RPC_ApplyStatusesFromFloatArray", photonView.Owner, new object[] { payload });
+				return true;
+			}
+			if (TryApplyStatusDirectly(character, statusType, delta))
+			{
+				return true;
+			}
+			return TryApplyStatusPayloadLocally(character, payload);
+		}
+		catch (Exception ex)
+		{
+			Logger.LogDebug($"[{PluginName}] Night cold fallback apply failed for {character.characterName}: {ex.Message}");
+			return false;
+		}
+	}
+
+	private bool TryApplyStatusDirectly(Character character, CharacterAfflictions.STATUSTYPE statusType, float delta)
+	{
+		if (character?.refs?.afflictions == null || delta <= 0f)
+		{
+			return false;
+		}
+		try
+		{
+			_isApplyingNightColdFallbackLocal = true;
+			character.refs.afflictions.AddStatus(statusType, delta);
+			return true;
+		}
+		catch
+		{
+			return false;
+		}
+		finally
+		{
+			_isApplyingNightColdFallbackLocal = false;
+		}
+	}
+
+	private static bool TryApplyStatusPayloadLocally(Character character, float[] payload)
+	{
+		if (character == null || payload == null)
+		{
+			return false;
+		}
+		try
+		{
+			MethodInfo method = character.GetType().GetMethod("RPC_ApplyStatusesFromFloatArray", InstanceBindingFlags);
+			if (method != null)
+			{
+				method.Invoke(character, new object[] { payload });
+				return true;
+			}
+		}
+		catch
+		{
+		}
+		return false;
+	}
+
+	private static bool TryIsNightTime(out float currentNormalizedTime)
+	{
+		currentNormalizedTime = 0f;
+		DayNightManager dayNightManager = DayNightManager.instance ?? UnityEngine.Object.FindAnyObjectByType<DayNightManager>();
+		if (dayNightManager == null)
+		{
+			return false;
+		}
+		if (TryGetIsDayFactor(dayNightManager, out float isDayFactor))
+		{
+			currentNormalizedTime = Mathf.Clamp01(isDayFactor);
+			return isDayFactor < 0.5f;
+		}
+		if (!TryGetCurrentDayNightTimeNormalized(dayNightManager, out currentNormalizedTime))
+		{
+			return false;
+		}
+		float dayStart = Mathf.Repeat(dayNightManager.dayStart, 1f);
+		float dayEnd = Mathf.Repeat(dayNightManager.dayEnd, 1f);
+		bool isDay = IsTimeWithinWrappedRange(currentNormalizedTime, dayStart, dayEnd);
+		return !isDay;
+	}
+
+	private static bool TryGetIsDayFactor(DayNightManager dayNightManager, out float isDayFactor)
+	{
+		isDayFactor = 0f;
+		if (dayNightManager == null)
+		{
+			return false;
+		}
+		Type managerType = dayNightManager.GetType();
+		PropertyInfo isDayProperty = managerType.GetProperty("isDay", InstanceBindingFlags);
+		if (TryReadSingleValue(isDayProperty?.GetValue(dayNightManager), out float propertyValue))
+		{
+			isDayFactor = Mathf.Clamp01(propertyValue);
+			return true;
+		}
+		FieldInfo isDayField = managerType.GetField("isDay", InstanceBindingFlags);
+		if (TryReadSingleValue(isDayField?.GetValue(dayNightManager), out float fieldValue))
+		{
+			isDayFactor = Mathf.Clamp01(fieldValue);
+			return true;
+		}
+		return false;
+	}
+
+	private static bool IsTimeWithinWrappedRange(float value, float rangeStart, float rangeEnd)
+	{
+		value = Mathf.Repeat(value, 1f);
+		rangeStart = Mathf.Repeat(rangeStart, 1f);
+		rangeEnd = Mathf.Repeat(rangeEnd, 1f);
+		if (Mathf.Abs(rangeStart - rangeEnd) < 0.0001f)
+		{
+			return true;
+		}
+		if (rangeStart < rangeEnd)
+		{
+			return value >= rangeStart && value < rangeEnd;
+		}
+		return value >= rangeStart || value < rangeEnd;
+	}
+
+	private static bool TryGetCurrentDayNightTimeNormalized(DayNightManager dayNightManager, out float currentNormalizedTime)
+	{
+		currentNormalizedTime = 0f;
+		if (dayNightManager == null)
+		{
+			return false;
+		}
+		Type managerType = dayNightManager.GetType();
+		for (int i = 0; i < DayNightTimeMemberCandidates.Length; i++)
+		{
+			string memberName = DayNightTimeMemberCandidates[i];
+			PropertyInfo property = managerType.GetProperty(memberName, InstanceBindingFlags);
+			if (TryReadSingleValue(property?.GetValue(dayNightManager), out float propertyValue))
+			{
+				currentNormalizedTime = Mathf.Repeat(propertyValue, 1f);
+				return true;
+			}
+			FieldInfo field = managerType.GetField(memberName, InstanceBindingFlags);
+			if (TryReadSingleValue(field?.GetValue(dayNightManager), out float fieldValue))
+			{
+				currentNormalizedTime = Mathf.Repeat(fieldValue, 1f);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static bool TryReadSingleValue(object rawValue, out float value)
+	{
+		value = 0f;
+		switch (rawValue)
+		{
+		case bool boolValue:
+			value = boolValue ? 1f : 0f;
+			return true;
+		case float floatValue:
+			value = floatValue;
+			return true;
+		case double doubleValue:
+			value = (float)doubleValue;
+			return true;
+		case int intValue:
+			value = intValue;
+			return true;
+		default:
+			return false;
 		}
 	}
 
@@ -1939,7 +2586,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private void GrantCompassToAllPlayers(string reason)
 	{
-		if (!IsModFeatureEnabled() || !HasFogAuthority())
+		if (!IsModFeatureEnabled() || !HasFogAuthority() || !IsCompassFeatureEnabled())
 		{
 			return;
 		}
@@ -1950,7 +2597,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private void SyncCompassGrantsToPlayersIfNeeded()
 	{
-		if (!IsModFeatureEnabled() || !HasFogAuthority() || _totalCompassGrantCount <= 0)
+		if (!IsModFeatureEnabled() || !HasFogAuthority() || !IsCompassFeatureEnabled() || _totalCompassGrantCount <= 0)
 		{
 			return;
 		}
@@ -1964,7 +2611,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private void SyncCompassGrantsToPlayers(bool force, string reason)
 	{
-		if (!IsModFeatureEnabled() || !HasFogAuthority() || _totalCompassGrantCount <= 0)
+		if (!IsModFeatureEnabled() || !HasFogAuthority() || !IsCompassFeatureEnabled() || _totalCompassGrantCount <= 0)
 		{
 			return;
 		}
@@ -2017,65 +2664,7 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return false;
 		}
-		if (ShouldSpawnCompassAboveHead(player))
-		{
-			return DropCompassAbovePlayerHead(player, reason);
-		}
-		if (player.AddItem(_compassItem.itemID, null, out _))
-		{
-			Logger.LogDebug($"[{PluginName}] Granted compass to {player.name} ({reason}).");
-			return true;
-		}
-		return DropCompassAbovePlayerHead(player, reason) || DropCompassNearPlayer(player, reason);
-	}
-
-	private static bool ShouldSpawnCompassAboveHead(Player player)
-	{
-		if (player == null)
-		{
-			return false;
-		}
-		Character character = player.character;
-		if (character?.data != null && (character.data.currentItem != null || character.data.isClimbingAnything))
-		{
-			return true;
-		}
-		for (int i = 0; i < player.itemSlots.Length; i++)
-		{
-			ItemSlot itemSlot = player.itemSlots[i];
-			if (itemSlot != null && itemSlot.IsEmpty())
-			{
-				return false;
-			}
-		}
-		return true;
-	}
-
-	private bool DropCompassAbovePlayerHead(Player player, string reason)
-	{
-		if (player == null || _compassItem == null)
-		{
-			return false;
-		}
-		Vector3 spawnPosition = GetCompassAboveHeadPosition(player);
-		try
-		{
-			if (PhotonNetwork.InRoom)
-			{
-				PhotonNetwork.InstantiateItemRoom(_compassItem.name, spawnPosition, Quaternion.identity);
-			}
-			else
-			{
-				UnityEngine.Object.Instantiate(_compassItem.gameObject, spawnPosition, Quaternion.identity);
-			}
-			Logger.LogDebug($"[{PluginName}] Spawned compass above {player.name} ({reason}) to avoid occupying the held-item slot while climbing.");
-			return true;
-		}
-		catch (Exception ex)
-		{
-			Logger.LogWarning($"[{PluginName}] Failed to spawn compass above {player.name} ({reason}): {ex.Message}");
-			return false;
-		}
+		return DropCompassInFrontOfPlayer(player, reason);
 	}
 
 	private bool DropCompassInFrontOfPlayer(Player player, string reason)
@@ -2106,21 +2695,20 @@ public sealed class Plugin : BaseUnityPlugin
 		}
 	}
 
-	private bool DropCompassNearPlayer(Player player, string reason)
-	{
-		return DropCompassInFrontOfPlayer(player, reason);
-	}
-
 	private static Vector3 GetCompassDropPosition(Player player)
 	{
 		Character character = player.character;
-		Vector3 origin = character != null ? character.Center : player.transform.position;
-		Vector3 forward = character != null ? Vector3.ProjectOnPlane(character.transform.forward, Vector3.up) : Vector3.forward;
+		Vector3 origin = character != null ? character.Center : player.transform.position + Vector3.up * 1.1f;
+		Vector3 forward = character != null ? Vector3.ProjectOnPlane(character.transform.forward, Vector3.up) : Vector3.ProjectOnPlane(player.transform.forward, Vector3.up);
+		if (forward.sqrMagnitude < 0.01f)
+		{
+			forward = Vector3.ProjectOnPlane(player.transform.forward, Vector3.up);
+		}
 		if (forward.sqrMagnitude < 0.01f)
 		{
 			forward = Vector3.forward;
 		}
-		return origin + Vector3.up * 0.5f + forward.normalized * 1.1f;
+		return origin + Vector3.up * 0.15f + forward.normalized * 1.65f;
 	}
 
 	private static Quaternion GetCompassDropRotation(Player player)
@@ -2134,21 +2722,9 @@ public sealed class Plugin : BaseUnityPlugin
 		return Quaternion.LookRotation(forward.normalized, Vector3.up);
 	}
 
-	private static Vector3 GetCompassAboveHeadPosition(Player player)
-	{
-		Character character = player.character;
-		Vector3 headPosition = character != null ? character.Head : player.transform.position + Vector3.up * 1.6f;
-		Vector3 awayFromWall = character != null ? -character.transform.forward : Vector3.forward;
-		if (awayFromWall.sqrMagnitude < 0.01f)
-		{
-			awayFromWall = Vector3.forward;
-		}
-		return headPosition + Vector3.up * 0.45f + awayFromWall.normalized * 0.35f;
-	}
-
 	private void HandleManualCompassHotkey()
 	{
-		if (!IsModFeatureEnabled() || !HasFogAuthority())
+		if (!IsModFeatureEnabled() || !HasFogAuthority() || !IsCompassFeatureEnabled())
 		{
 			return;
 		}
@@ -2169,6 +2745,41 @@ public sealed class Plugin : BaseUnityPlugin
 		TrySpawnManualCompassForLocalPlayer();
 	}
 
+	private void HandleFogPauseHotkey()
+	{
+		if (!IsModFeatureEnabled() || !HasFogAuthority() || !IsGameplayFogScene(SceneManager.GetActiveScene()) || LoadingScreenHandler.loading)
+		{
+			return;
+		}
+		KeyCode hotkey = GetFogPauseHotkey();
+		if (hotkey == KeyCode.None)
+		{
+			return;
+		}
+		GUIManager instance = GUIManager.instance;
+		if (instance != null && instance.windowBlockingInput)
+		{
+			return;
+		}
+		if (!Input.GetKeyDown(hotkey))
+		{
+			return;
+		}
+		_fogPaused = !_fogPaused;
+		if (_fogPaused)
+		{
+			ApplyPausedFogState(syncImmediately: true);
+			Logger.LogInfo($"[{PluginName}] Fog paused by hotkey {hotkey}.");
+			return;
+		}
+		Logger.LogInfo($"[{PluginName}] Fog resumed by hotkey {hotkey}.");
+		if (_orbFogHandler != null && _initialDelayCompleted && !ShouldHoldFogUntilCampfireActivation(_orbFogHandler) && !_orbFogHandler.isMoving)
+		{
+			StartFogMovement();
+		}
+		ForceSyncFogStateToGuests();
+	}
+
 	private void HandleHiddenNightTestHotkey()
 	{
 		if (!IsModFeatureEnabled() || !HasFogAuthority() || HiddenNightTestHotkey == KeyCode.None)
@@ -2177,6 +2788,11 @@ public sealed class Plugin : BaseUnityPlugin
 			return;
 		}
 		if (!IsGameplayFogScene(SceneManager.GetActiveScene()) || LoadingScreenHandler.loading)
+		{
+			ResetHiddenNightTestHotkeyState();
+			return;
+		}
+		if (HasRemotePlayers())
 		{
 			ResetHiddenNightTestHotkeyState();
 			return;
@@ -2255,6 +2871,10 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private void TrySpawnManualCompassForLocalPlayer()
 	{
+		if (!IsCompassFeatureEnabled())
+		{
+			return;
+		}
 		if (!TryResolveCompassItem())
 		{
 			Logger.LogWarning($"[{PluginName}] Failed to resolve compass item for manual hotkey spawn.");
@@ -2386,7 +3006,7 @@ public sealed class Plugin : BaseUnityPlugin
 	{
 		foreach (ConfigKey candidate in Enum.GetValues(typeof(ConfigKey)))
 		{
-			if (string.Equals(keyName, GetKeyName(candidate, isChineseLanguage: false), StringComparison.OrdinalIgnoreCase) || string.Equals(keyName, GetKeyName(candidate, isChineseLanguage: true), StringComparison.OrdinalIgnoreCase))
+			if (string.Equals(keyName, GetConfigKeyName(candidate), StringComparison.OrdinalIgnoreCase) || string.Equals(keyName, GetKeyName(candidate, isChineseLanguage: true), StringComparison.OrdinalIgnoreCase))
 			{
 				configKey = candidate;
 				return true;
@@ -2493,11 +3113,11 @@ public sealed class Plugin : BaseUnityPlugin
 		AddUiLocalizationPair(map, "Fog Climb", GetLocalizedModDisplayName(isChineseLanguage));
 		AddUiLocalizationPair(map, "FogClimb", GetLocalizedModDisplayName(isChineseLanguage));
 		AddUiLocalizationPair(map, "毒雾攀登", GetLocalizedModDisplayName(isChineseLanguage));
-		AddUiLocalizationPair(map, GetSectionName(isChineseLanguage: false), GetSectionName(isChineseLanguage));
+		AddUiLocalizationPair(map, GetConfigSectionName(), GetSectionName(isChineseLanguage));
 		AddUiLocalizationPair(map, GetSectionName(isChineseLanguage: true), GetSectionName(isChineseLanguage));
 		foreach (ConfigKey configKey in Enum.GetValues(typeof(ConfigKey)))
 		{
-			AddUiLocalizationPair(map, GetKeyName(configKey, isChineseLanguage: false), GetKeyName(configKey, isChineseLanguage));
+			AddUiLocalizationPair(map, GetConfigKeyName(configKey), GetKeyName(configKey, isChineseLanguage));
 			AddUiLocalizationPair(map, GetKeyName(configKey, isChineseLanguage: true), GetKeyName(configKey, isChineseLanguage));
 			AddUiLocalizationPair(map, GetLocalizedDescription(configKey, isChineseLanguage: false), GetLocalizedDescription(configKey, isChineseLanguage));
 			AddUiLocalizationPair(map, GetLocalizedDescription(configKey, isChineseLanguage: true), GetLocalizedDescription(configKey, isChineseLanguage));
@@ -2534,6 +3154,22 @@ public sealed class Plugin : BaseUnityPlugin
 		return CompassHotkey?.Value ?? KeyCode.G;
 	}
 
+	private static KeyCode GetFogPauseHotkey()
+	{
+		return FogPauseHotkey?.Value ?? KeyCode.Y;
+	}
+
+	private static string GetFogPauseHotkeyLabel()
+	{
+		KeyCode hotkey = GetFogPauseHotkey();
+		string keyText = hotkey.ToString();
+		if (string.IsNullOrWhiteSpace(keyText) || hotkey == KeyCode.None)
+		{
+			return "None";
+		}
+		return keyText.ToUpperInvariant();
+	}
+
 	private static string GetCompassHotkeyLabel()
 	{
 		KeyCode hotkey = GetCompassHotkey();
@@ -2553,7 +3189,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private bool ShouldShowCompassLobbyNotice()
 	{
-		return IsModFeatureEnabled() && HasFogAuthority() && GetCompassHotkey() != KeyCode.None && IsAirportScene(SceneManager.GetActiveScene());
+		return IsModFeatureEnabled() && HasFogAuthority() && IsCompassFeatureEnabled() && GetCompassHotkey() != KeyCode.None && IsAirportScene(SceneManager.GetActiveScene());
 	}
 
 	private void UpdateCompassLobbyNotice()
@@ -2595,10 +3231,10 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return;
 		}
-		GameObject noticeObject = new GameObject("FogClimbCompassLobbyNotice");
-		noticeObject.transform.SetParent(canvas.transform, false);
-		noticeObject.transform.SetAsLastSibling();
-		_compassLobbyNoticeRect = noticeObject.AddComponent<RectTransform>();
+		GameObject noticeObject = new GameObject("FogClimbCompassLobbyNotice", typeof(RectTransform));
+		_compassLobbyNoticeRect = noticeObject.GetComponent<RectTransform>();
+		_compassLobbyNoticeRect.SetParent(canvas.transform, false);
+		_compassLobbyNoticeRect.SetAsLastSibling();
 		_compassLobbyNoticeRect.sizeDelta = new Vector2(CompassLobbyNoticeWidth, CompassLobbyNoticeHeight);
 		_compassLobbyNoticeText = noticeObject.AddComponent<TextMeshProUGUI>();
 		ApplyCompassLobbyNoticeStyle(_compassLobbyNoticeText);
@@ -2675,7 +3311,7 @@ public sealed class Plugin : BaseUnityPlugin
 		Scene activeScene = SceneManager.GetActiveScene();
 		if (!activeScene.IsValid())
 		{
-			return GameHandler.IsOnIsland;
+			return false;
 		}
 		return IsAirportScene(activeScene) || IsGameplayFogScene(activeScene);
 	}
@@ -2886,17 +3522,17 @@ public sealed class Plugin : BaseUnityPlugin
 		}
 		try
 		{
-			GameObject container = new GameObject("FogClimbUI");
-			container.transform.SetParent(canvas.transform, false);
-			_fogUiRect = container.AddComponent<RectTransform>();
+			GameObject container = new GameObject("FogClimbUI", typeof(RectTransform));
+			_fogUiRect = container.GetComponent<RectTransform>();
+			_fogUiRect.SetParent(canvas.transform, false);
 			_fogUiRect.anchorMin = Vector2.zero;
 			_fogUiRect.anchorMax = Vector2.zero;
 			_fogUiRect.pivot = Vector2.zero;
 			_fogUiRect.sizeDelta = new Vector2(FogUiWidth, FogUiHeight);
-			container.transform.SetAsLastSibling();
-			GameObject labelObject = new GameObject("FogClimbUILabel");
-			labelObject.transform.SetParent(container.transform, false);
-			RectTransform labelRect = labelObject.AddComponent<RectTransform>();
+			_fogUiRect.SetAsLastSibling();
+			GameObject labelObject = new GameObject("FogClimbUILabel", typeof(RectTransform));
+			RectTransform labelRect = labelObject.GetComponent<RectTransform>();
+			labelRect.SetParent(_fogUiRect, false);
 			labelRect.anchorMin = Vector2.zero;
 			labelRect.anchorMax = Vector2.zero;
 			labelRect.pivot = Vector2.zero;
@@ -2904,6 +3540,7 @@ public sealed class Plugin : BaseUnityPlugin
 			labelRect.sizeDelta = new Vector2(FogUiWidth, FogUiHeight);
 			_fogUiText = labelObject.AddComponent<TextMeshProUGUI>();
 			ApplyGameTextStyle(_fogUiText, Color.white);
+			_fogUiText.richText = true;
 			_fogUiText.text = string.Empty;
 			ClampFogUiToCanvas(canvas);
 			SetFogUiVisible(true);
@@ -2937,65 +3574,163 @@ public sealed class Plugin : BaseUnityPlugin
 		}
 		SetFogUiVisible(true);
 		ClampFogUiToCanvas(targetCanvas);
-		bool isChinese = DetectChineseLanguage();
-		float speed = _orbFogHandler != null ? _orbFogHandler.speed : (FogSpeed?.Value ?? DefaultFogSpeed);
-		string state = GetFogStateLabel(isChinese);
-		string countdown = GetFogCountdownLabel(isChinese);
-		if (_orbFogHandler == null)
+		bool isChineseLanguage = DetectChineseLanguage();
+		bool isLobbyScene = IsAirportScene(SceneManager.GetActiveScene());
+		float speed = _fogPaused ? 0f : (_orbFogHandler != null ? _orbFogHandler.speed : (FogSpeed?.Value ?? DefaultFogSpeed));
+		string speedText = isChineseLanguage ? "毒雾速度:" : "FogSpeed:";
+		string stateText = isChineseLanguage ? "状态:" : "State:";
+		string speedLabel = $"{Colorize(speedText, FogUiSpeedLabelColor)} {Colorize(speed.ToString("0.##"), FogUiSpeedValueColor)}";
+		string stateLabel = $"{Colorize(stateText, FogUiStateLabelColor)} {GetFogRuntimeStateLabel(isChineseLanguage)}";
+		string timingLabel = GetFogTimingLabel(isChineseLanguage);
+		string primaryLine = string.IsNullOrWhiteSpace(timingLabel) ? $"{speedLabel}  |  {stateLabel}" : $"{speedLabel}  |  {stateLabel}  |  {timingLabel}";
+		if (!isLobbyScene)
 		{
-			float configuredDelay = FogDelay?.Value ?? DefaultFogDelaySeconds;
-			_fogUiText.text = isChinese
-				? $"Fog Climb  |  速度: {speed:F2}  |  延迟: {configuredDelay:F0}s  |  状态: {state}"
-				: $"Fog Climb  |  Speed: {speed:F2}  |  Delay: {configuredDelay:F0}s  |  State: {state}";
+			_fogUiText.text = primaryLine;
 			return;
 		}
-		_fogUiText.text = isChinese
-			? $"Fog Climb  |  速度: {speed:F2}  |  状态: {state}{countdown}"
-			: $"Fog Climb  |  Speed: {speed:F2}  |  State: {state}{countdown}";
+		string pauseHint = GetLobbyPauseHintLabel(isChineseLanguage);
+		string nightHint = GetNightFallbackUiLabel(isChineseLanguage);
+		_fogUiText.text = $"{primaryLine}  |  {pauseHint}  |  {nightHint}";
 	}
 
-	private string GetFogStateLabel(bool isChinese)
+	private string GetFogTimingLabel(bool isChineseLanguage)
 	{
-		if (!IsModFeatureEnabled())
-		{
-			return isChinese ? "关闭" : "OFF";
-		}
+		float configuredDelay = Mathf.Max(FogDelay?.Value ?? DefaultFogDelaySeconds, 0f);
+		string fogDelayText = isChineseLanguage ? "毒雾延迟:" : "Fog Delay:";
 		if (_orbFogHandler == null)
 		{
-			Scene activeScene = SceneManager.GetActiveScene();
-			if (IsAirportScene(activeScene))
-			{
-				return isChinese ? "大厅" : "LOBBY";
-			}
-			if (IsGameplayFogScene(activeScene))
-			{
-				return isChinese ? "初始化中" : "SYNCING";
-			}
-			return isChinese ? "未就绪" : "INACTIVE";
+			return $"{Colorize(fogDelayText, FogUiWaitLabelColor)} {Colorize($"{configuredDelay:F1}s", FogUiWaitValueColor)}";
 		}
-		if (HasFogAuthority() && ShouldEnforceConfiguredDelay(_orbFogHandler))
-		{
-			return isChinese ? "等待中" : "WAITING";
-		}
-		if (_orbFogHandler.isMoving)
-		{
-			return isChinese ? "运行中" : "RUNNING";
-		}
-		if (_orbFogHandler.hasArrived)
-		{
-			return isChinese ? "已到达" : "ARRIVED";
-		}
-		return isChinese ? "待机中" : "IDLE";
-	}
-
-	private string GetFogCountdownLabel(bool isChinese)
-	{
-		if (!HasFogAuthority() || _orbFogHandler == null || !ShouldEnforceConfiguredDelay(_orbFogHandler) || !HasVisibleFogDelayCountdown())
+		if (IsFogRemovedInCurrentScene())
 		{
 			return string.Empty;
 		}
-		float remaining = Mathf.Max((FogDelay?.Value ?? 0f) - _fogDelayTimer, 0f);
-		return isChinese ? $"  |  倒计时: {remaining:F1}s" : $"  |  Starts In: {remaining:F1}s";
+		if (_fogPaused)
+		{
+			return string.Empty;
+		}
+		if (_orbFogHandler.isMoving || _orbFogHandler.hasArrived || _initialDelayCompleted)
+		{
+			return string.Empty;
+		}
+		float hiddenRemaining = Mathf.Max(HiddenFogDelayBufferSeconds - _fogHiddenBufferTimer, 0f);
+		float delayRemaining = Mathf.Max(configuredDelay - _fogDelayTimer, 0f);
+		if (hiddenRemaining > 0.05f)
+		{
+			float hiddenDanger = HiddenFogDelayBufferSeconds <= 0.01f ? 1f : Mathf.Clamp01(1f - hiddenRemaining / HiddenFogDelayBufferSeconds);
+			string bufferLabelColor = LerpHexColor(FogUiCountdownLabelColor, FogUiCountdownDangerLabelColor, hiddenDanger);
+			string bufferValueColor = LerpHexColor(FogUiCountdownValueColor, FogUiCountdownDangerValueColor, hiddenDanger);
+			string bufferText = isChineseLanguage ? "缓冲:" : "Buffer:";
+			return $"{Colorize(bufferText, bufferLabelColor)} {Colorize($"{hiddenRemaining:F1}s", bufferValueColor)}";
+		}
+		if (delayRemaining <= 0.05f)
+		{
+			return string.Empty;
+		}
+		float danger = configuredDelay <= 0.01f ? 1f : Mathf.Clamp01(1f - delayRemaining / configuredDelay);
+		string fogDelayLabelColor = LerpHexColor(FogUiDelayCountdownStartLabelColor, FogUiDelayCountdownEndLabelColor, danger);
+		string fogDelayValueColor = LerpHexColor(FogUiDelayCountdownStartValueColor, FogUiDelayCountdownEndValueColor, danger);
+		return $"{Colorize(fogDelayText, fogDelayLabelColor)} {Colorize($"{delayRemaining:F1}s", fogDelayValueColor)}";
+	}
+
+	private string GetFogRuntimeStateLabel(bool isChineseLanguage)
+	{
+		if (!IsModFeatureEnabled())
+		{
+			return Colorize(isChineseLanguage ? "关闭" : "OFF", FogUiStatePausedColor);
+		}
+		if (IsAirportScene(SceneManager.GetActiveScene()))
+		{
+			return Colorize(isChineseLanguage ? "大厅" : "LOBBY", FogUiStateSyncingColor);
+		}
+		if (IsFogRemovedInCurrentScene())
+		{
+			return Colorize(isChineseLanguage ? "已禁用" : "DISABLED", FogUiStatePausedColor);
+		}
+		if (_fogPaused)
+		{
+			return Colorize(isChineseLanguage ? "房主已暂停" : "HOST PAUSED", FogUiStatePausedColor);
+		}
+		if (_orbFogHandler == null)
+		{
+			return Colorize(isChineseLanguage ? "同步中" : "SYNCING", FogUiStateSyncingColor);
+		}
+		if (!_initialDelayCompleted || ShouldEnforceConfiguredDelay(_orbFogHandler))
+		{
+			return Colorize(isChineseLanguage ? "等待中" : "WAITING", FogUiStateWaitingColor);
+		}
+		if (_orbFogHandler.isMoving)
+		{
+			return Colorize(isChineseLanguage ? "运行中" : "RUNNING", FogUiStateRunningColor);
+		}
+		if (_orbFogHandler.hasArrived)
+		{
+			return Colorize(isChineseLanguage ? "已到达" : "ARRIVED", FogUiStateRunningColor);
+		}
+		return Colorize(isChineseLanguage ? "待机" : "IDLE", FogUiStateSyncingColor);
+	}
+
+	private static string GetLobbyPauseHintLabel(bool isChineseLanguage)
+	{
+		string hotkeyLabel = GetFogPauseHotkeyLabel();
+		return isChineseLanguage
+			? $"{Colorize("暂停键:", FogUiHintLabelColor)} {Colorize(hotkeyLabel, FogUiHintValueColor)}"
+			: $"{Colorize("Pause:", FogUiHintLabelColor)} {Colorize(hotkeyLabel, FogUiHintValueColor)}";
+	}
+
+	private static string GetNightFallbackUiLabel(bool isChineseLanguage)
+	{
+		string label = isChineseLanguage ? "夜晚寒冷:" : "Night Cold:";
+		if (!IsNightColdFeatureEnabled())
+		{
+			return isChineseLanguage
+				? $"{Colorize(label, FogUiHintLabelColor)} {Colorize("已关闭", FogUiNightDisabledColor)}"
+				: $"{Colorize(label, FogUiHintLabelColor)} {Colorize("OFF", FogUiNightDisabledColor)}";
+		}
+		if (IsNightColdEnabledByOfficialSettings())
+		{
+			return isChineseLanguage
+				? $"{Colorize(label, FogUiHintLabelColor)} {Colorize("已开启", FogUiNightEnabledColor)}"
+				: $"{Colorize(label, FogUiHintLabelColor)} {Colorize("ON", FogUiNightEnabledColor)}";
+		}
+		return isChineseLanguage
+			? $"{Colorize(label, FogUiHintLabelColor)} {Colorize("跟随官方关闭", FogUiNightDisabledColor)}"
+			: $"{Colorize(label, FogUiHintLabelColor)} {Colorize("OFF (Official)", FogUiNightDisabledColor)}";
+	}
+
+	private static string Colorize(string text, string hexColor)
+	{
+		if (string.IsNullOrEmpty(text) || string.IsNullOrWhiteSpace(hexColor))
+		{
+			return text ?? string.Empty;
+		}
+		return $"<color={hexColor}>{text}</color>";
+	}
+
+	private static string LerpHexColor(string fromHex, string toHex, float t)
+	{
+		if (!TryParseHtmlColor(fromHex, out Color fromColor) || !TryParseHtmlColor(toHex, out Color toColor))
+		{
+			return t >= 0.5f ? toHex : fromHex;
+		}
+		Color mixed = Color.Lerp(fromColor, toColor, Mathf.Clamp01(t));
+		return $"#{ColorUtility.ToHtmlStringRGB(mixed)}";
+	}
+
+	private static bool TryParseHtmlColor(string hexColor, out Color color)
+	{
+		color = Color.white;
+		if (string.IsNullOrWhiteSpace(hexColor))
+		{
+			return false;
+		}
+		string normalized = hexColor.StartsWith("#", StringComparison.Ordinal) ? hexColor : $"#{hexColor}";
+		return ColorUtility.TryParseHtmlString(normalized, out color);
+	}
+
+	private bool HasFogCountdownLabel()
+	{
+		return HasFogAuthority() && _orbFogHandler != null && ShouldEnforceConfiguredDelay(_orbFogHandler) && HasVisibleFogDelayCountdown();
 	}
 
 	private void ClampFogUiToCanvas(Canvas targetCanvas = null)
@@ -3100,7 +3835,11 @@ public sealed class Plugin : BaseUnityPlugin
 		_restoredCheckpointCampfireIds.Clear();
 		_playerCompassGrantCounts.Clear();
 		_remoteFogSuppressionDebt.Clear();
+		_nightColdProbeStates.Clear();
+		_fogPaused = false;
+		_isApplyingNightColdFallbackLocal = false;
 		_localFogStatusSuppressionDepth = 0;
+		_lastNightColdFallbackSyncTime = -NightColdFallbackSyncIntervalSeconds;
 		ResetHiddenNightTestHotkeyState();
 		ResetFogStateSyncSnapshot();
 	}
@@ -3175,14 +3914,24 @@ public sealed class Plugin : BaseUnityPlugin
 		return languageName.IndexOf("Chinese", StringComparison.OrdinalIgnoreCase) >= 0 || languageName.IndexOf("中文", StringComparison.OrdinalIgnoreCase) >= 0 || languageName.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
 	}
 
+	private static string GetConfigSectionName()
+	{
+		return CanonicalConfigSectionName;
+	}
+
 	private static string GetSectionName(bool isChineseLanguage)
 	{
-		return isChineseLanguage ? "毒雾" : "Fog";
+		return isChineseLanguage ? "毒雾" : CanonicalConfigSectionName;
 	}
 
 	private static string GetLocalizedModDisplayName(bool isChineseLanguage)
 	{
 		return isChineseLanguage ? "毒雾攀登" : "Fog Climb";
+	}
+
+	private static string GetConfigKeyName(ConfigKey configKey)
+	{
+		return GetKeyName(configKey, isChineseLanguage: false);
 	}
 
 	private static string GetKeyName(ConfigKey configKey, bool isChineseLanguage)
@@ -3191,11 +3940,12 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			ConfigKey.ModEnabled => isChineseLanguage ? "模组开关" : "Enable Mod",
 			ConfigKey.FogColdSuppression => isChineseLanguage ? "毒雾寒冷值开关" : "Suppress Fog Cold",
+			ConfigKey.NightColdEnabled => isChineseLanguage ? "夜晚寒冷开关" : "Night Cold",
 			ConfigKey.FogSpeed => isChineseLanguage ? "毒雾移动速度" : "Fog Speed",
 			ConfigKey.FogDelay => isChineseLanguage ? "毒雾延迟时间s" : "Fog Delay (s)",
-			ConfigKey.CalderaFogPosition => isChineseLanguage ? "火山毒雾位置开关" : "Caldera Fog Position",
-			ConfigKey.KilnFogPosition => isChineseLanguage ? "熔炉毒雾位置开关" : "Kiln Fog Position",
+			ConfigKey.CompassEnabled => isChineseLanguage ? "指南针功能开关" : "Compass Feature",
 			ConfigKey.CompassHotkey => isChineseLanguage ? "指南针生成按键" : "Compass Hotkey",
+			ConfigKey.FogPauseHotkey => isChineseLanguage ? "毒雾暂停按键" : "Pause Fog Hotkey",
 			ConfigKey.FogUiEnabled => isChineseLanguage ? "UI启用" : "Fog UI",
 			ConfigKey.FogUiX => isChineseLanguage ? "UI X位置" : "UI X Position",
 			ConfigKey.FogUiY => isChineseLanguage ? "UI Y位置" : "UI Y Position",
@@ -3208,17 +3958,18 @@ public sealed class Plugin : BaseUnityPlugin
 	{
 		return configKey switch
 		{
-			ConfigKey.ModEnabled => isChineseLanguage ? "启用独立毒雾模组。仅主机需要安装；主机会同步毒雾进度、寒冷修正和指南针奖励。毒雾寒冷是否抵消由下方开关单独控制，但熔炉和山顶会保留原版“不再因毒雾受寒”的规则，不影响正常夜晚寒冷或游戏自定义设置。" : "Enable the standalone fog mod. Only the host needs it; the host synchronizes fog progress, cold fixes, and compass rewards. Fog-only cold suppression is controlled separately below, but kiln and peak still preserve vanilla no-fog-cold behavior without touching normal night cold or unrelated custom settings.",
-			ConfigKey.FogColdSuppression => isChineseLanguage ? "控制是否抵消毒雾带来的寒冷值。关闭后前半程会恢复原版毒雾寒冷；熔炉和山顶仍保留原版“不再因毒雾受寒”的逻辑，不影响夜晚寒冷、毒雾推进和游戏中的其他自定义设置。" : "Toggle fog-only cold suppression. When off, earlier stages can use vanilla fog cold again; kiln and peak still preserve vanilla no-fog-cold behavior. This does not affect night cold, fog progression, or other in-game custom settings.",
-			ConfigKey.FogSpeed => isChineseLanguage ? "毒雾移动速度，范围 0.3~5，默认 2。" : "Fog movement speed. Range 0.3 to 5, default 2.",
-			ConfigKey.FogDelay => isChineseLanguage ? "首段毒雾开始移动前的延迟，范围 0~150 秒，默认 90 秒。" : "Delay before the first fog segment starts moving. Range 0 to 150 seconds, default 90 seconds.",
-			ConfigKey.CalderaFogPosition => isChineseLanguage ? "启用后使用 FogClimb 的火山毒雾位置修正，让火山阶段的毒雾更容易看到。默认关闭。" : "Use FogClimb's Caldera fog position override so the fog is easier to see in the volcano stage. Disabled by default.",
-			ConfigKey.KilnFogPosition => isChineseLanguage ? "启用后使用 FogClimb 的熔炉/山顶毒雾位置修正。关闭时不接管后两关的自定义毒雾位置。默认关闭。" : "Use FogClimb's kiln and peak fog position override. When disabled, the mod does not take over the custom fog positions for the last two stages. Disabled by default.",
-			ConfigKey.CompassHotkey => isChineseLanguage ? "按键在自己头顶生成普通指南针；设为 None 可禁用。" : "Spawn a normal compass above your head with a hotkey. Set to None to disable.",
+			ConfigKey.ModEnabled => isChineseLanguage ? "启用独立毒雾模组。仅主机需要安装；主机会同步毒雾进度、寒冷修正和指南针奖励。毒雾寒冷和夜晚寒冷都由各自的独立配置项控制。" : "Enable the standalone fog mod. Only the host needs it; the host synchronizes fog progress, cold fixes, and compass rewards. Fog cold and night cold are controlled by their own separate config entries.",
+			ConfigKey.FogColdSuppression => isChineseLanguage ? "控制是否抵消毒雾带来的寒冷值。关闭后前半程会恢复原版毒雾寒冷；熔炉和山顶仍保留原版“不再因毒雾受寒”的逻辑。这个选项只影响毒雾寒冷，不影响夜晚寒冷。" : "Toggle fog-only cold suppression. When off, earlier stages can use vanilla fog cold again; kiln and peak still preserve vanilla no-fog-cold behavior. This option only affects fog cold and does not affect night cold.",
+			ConfigKey.NightColdEnabled => isChineseLanguage ? "控制 FogClimb 的夜晚寒冷功能。开启后，当原版夜晚寒冷未正常生效时，主机会补回夜晚寒冷；关闭后模组不再处理夜晚寒冷。默认开启。" : "Controls FogClimb's night-cold handling. When enabled, the host restores night cold if vanilla night cold stops working; when disabled, the mod no longer handles night cold. Enabled by default.",
+			ConfigKey.FogSpeed => isChineseLanguage ? "毒雾移动速度，范围 0.3~20，默认 2。" : "Fog movement speed. Range 0.3 to 20, default 2.",
+			ConfigKey.FogDelay => isChineseLanguage ? "首段毒雾开始移动前的延迟，范围 0~1000 秒，默认 90 秒。" : "Delay before the first fog segment starts moving. Range 0 to 1000 seconds, default 90 seconds.",
+			ConfigKey.CompassEnabled => isChineseLanguage ? "总开关。控制自动发放指南针、按键生成指南针和大厅提示文本。默认关闭。" : "Master toggle for all compass features: automatic grants, hotkey spawning, and the lobby prompt. Disabled by default.",
+			ConfigKey.CompassHotkey => isChineseLanguage ? "按键在自己正前方生成普通指南针；设为 None 可禁用。" : "Spawn a normal compass in front of you with a hotkey. Set to None to disable.",
+			ConfigKey.FogPauseHotkey => isChineseLanguage ? "主机在游戏中按键暂停/继续毒雾推进；仅主机生效，设为 None 可禁用。默认 Y。" : "Host-only hotkey to pause/resume fog movement during gameplay. Set to None to disable. Default Y.",
 			ConfigKey.FogUiEnabled => isChineseLanguage ? "显示毒雾 HUD 文本。" : "Show the fog HUD text.",
 			ConfigKey.FogUiX => isChineseLanguage ? "毒雾 HUD 的 X 位置，默认 60。" : "Fog HUD X position. Default 60.",
-			ConfigKey.FogUiY => isChineseLanguage ? "毒雾 HUD 的 Y 位置，默认 16。" : "Fog HUD Y position. Default 16.",
-			ConfigKey.FogUiScale => isChineseLanguage ? "毒雾 HUD 缩放，默认 1.2。" : "Fog HUD scale. Default 1.2.",
+			ConfigKey.FogUiY => isChineseLanguage ? "毒雾 HUD 的 Y 位置，默认 0。" : "Fog HUD Y position. Default 0.",
+			ConfigKey.FogUiScale => isChineseLanguage ? "毒雾 HUD 缩放，默认 0.9。" : "Fog HUD scale. Default 0.9.",
 			_ => string.Empty
 		};
 	}
@@ -3233,9 +3984,19 @@ public sealed class Plugin : BaseUnityPlugin
 		return ModEnabled == null || ModEnabled.Value;
 	}
 
+	internal static bool IsCompassFeatureEnabled()
+	{
+		return CompassEnabled == null || CompassEnabled.Value;
+	}
+
 	internal static bool IsFogColdSuppressionEnabled()
 	{
 		return FogColdSuppression == null || FogColdSuppression.Value;
+	}
+
+	internal static bool IsNightColdFeatureEnabled()
+	{
+		return NightColdEnabled == null || NightColdEnabled.Value;
 	}
 
 	internal static bool ShouldPreserveVanillaLateGameNoCold()
@@ -3276,6 +4037,10 @@ public sealed class Plugin : BaseUnityPlugin
 
 	internal static bool ShouldSuppressLocalFogSourceStatus(CharacterAfflictions afflictions, CharacterAfflictions.STATUSTYPE statusType)
 	{
+		if (Instance != null && Instance._isApplyingNightColdFallbackLocal)
+		{
+			return false;
+		}
 		if (!ShouldSuppressFogColdDamage() || afflictions == null)
 		{
 			return false;
@@ -3294,6 +4059,10 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return true;
 		}
+		if (Instance != null && Instance.ShouldDisableNightColdInCurrentStage())
+		{
+			return true;
+		}
 		return ShouldPreserveVanillaLateGameNoCold() && Instance != null && Instance.IsCharacterInsideAnyFog(character);
 	}
 
@@ -3308,7 +4077,7 @@ public sealed class Plugin : BaseUnityPlugin
 			Instance.InitializeFogRuntimeState(fogHandler);
 		}
 		Instance.UpdateTrackedFogOrigin();
-		return Instance.ShouldEnforceConfiguredDelay(fogHandler) || Instance.ShouldHoldFogUntilCampfireActivation(fogHandler);
+		return IsFogRemovedInCurrentScene() || Instance.ShouldEnforceConfiguredDelay(fogHandler) || Instance.ShouldHoldFogUntilCampfireActivation(fogHandler);
 	}
 
 	internal static void NotifyCampfireLit(Campfire campfire)
@@ -3516,7 +4285,6 @@ public sealed class Plugin : BaseUnityPlugin
 			_orbFogHandler.currentWaitTime = 0f;
 			_orbFogHandler.speed = 0f;
 			_orbFogHandler.hasArrived = false;
-			TryNormalizeCalderaFogStage(forceResetCurrentSize: true);
 			if (_orbFogHandler.currentID == delayedOriginId && _initialDelayCompleted)
 			{
 				StartFogMovement();
@@ -3539,15 +4307,20 @@ public sealed class Plugin : BaseUnityPlugin
 			Logger.LogWarning($"[{PluginName}] Unable to resolve fog origin after lighting campfire because no fog origins were found.");
 			return false;
 		}
-		if ((int)campfire.advanceToSegment >= availableOriginCount)
+		Segment advancedSegment = campfire.advanceToSegment;
+		if (ShouldRemoveFogForSegment(advancedSegment))
 		{
-			Segment advancedSegment = campfire.advanceToSegment;
+			_pendingSyntheticFogSegmentId = -1;
+			Logger.LogInfo($"[{PluginName}] Skipping fog scheduling for removed segment {(int)advancedSegment} ({advancedSegment}). Campfire={campfire.name}.");
+			return false;
+		}
+		if ((int)advancedSegment >= availableOriginCount)
+		{
 			if (!ShouldUseCustomFogPositionForSegment(advancedSegment))
 			{
 				_pendingSyntheticFogSegmentId = -1;
-				delayedOriginId = availableOriginCount - 1;
-				Logger.LogInfo($"[{PluginName}] Synthetic fog position for segment {(int)advancedSegment} ({advancedSegment}) is disabled by config. Campfire={campfire.name}, fallbackOrigin={delayedOriginId}.");
-				return delayedOriginId >= 0;
+				Logger.LogInfo($"[{PluginName}] No synthetic fog stage is defined for segment {(int)advancedSegment} ({advancedSegment}). Campfire={campfire.name}.");
+				return false;
 			}
 			_pendingSyntheticFogSegmentId = (int)advancedSegment;
 			delayedOriginId = availableOriginCount - 1;
