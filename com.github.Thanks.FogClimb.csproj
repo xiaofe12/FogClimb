@@ -6,8 +6,8 @@
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
     <ProjectGuid>{80B088A7-C9C5-4121-BD0B-6046B1184B62}</ProjectGuid>
     <OutputType>Library</OutputType>
-    <RootNamespace>FogClimb</RootNamespace>
-    <AssemblyName>com.github.Thanks.FogClimb</AssemblyName>
+    <RootNamespace>FogColdControl</RootNamespace>
+    <AssemblyName>Thanks.Fog&amp;ColdControl</AssemblyName>
     <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>

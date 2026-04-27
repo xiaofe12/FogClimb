@@ -6,18 +6,19 @@ $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $outputRoot = Join-Path $projectRoot "bin\$Configuration"
-$dllName = "com.github.Thanks.FogClimb.dll"
+$manifestPath = Join-Path $projectRoot "manifest.json"
+$manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+$packageName = $manifest.name
+$version = $manifest.version_number
+$dllName = "Thanks.Fog&ColdControl.dll"
 $dllPath = Join-Path $outputRoot $dllName
-$packageRoot = Join-Path $outputRoot "FogClimb-package"
+$packageRoot = Join-Path $outputRoot "$packageName-package"
 $pluginsRoot = Join-Path $packageRoot "BepInEx\plugins"
-$packagePath = Join-Path $outputRoot "FogClimb-1.1.1.zip"
+$packagePath = Join-Path $outputRoot "$packageName-$version.zip"
 
 if (-not (Test-Path $dllPath)) {
     throw "Missing build output: $dllPath"
 }
-
-Remove-Item $packageRoot -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item $packagePath -Force -ErrorAction SilentlyContinue
 
 New-Item -ItemType Directory -Path $pluginsRoot -Force | Out-Null
 

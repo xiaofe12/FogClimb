@@ -1,59 +1,85 @@
-# FogClimb
+# Fog&ColdControl
 
-`FogClimb` turns PEAK's poison fog into a host-controlled climb mode for the whole room.
+Fog&ColdControl is a host-driven PEAK mod that turns the climb into a rising-fog run with separate fog-cold and night-cold control.
+Only the host needs to install it. Guests can join normally and follow the host's fog state without installing the mod.
 
-Current version: `1.1.1`
+Version: `1.0.0`
 
-## At a glance
+## Package contents
 
-- Only the host needs to install FogClimb.
-- Guests can join without installing anything.
-- Offline and online use the same gameplay rules.
-- The host controls fog movement, delay, compass rewards, HUD state, and cold handling.
-- If a guest also has FogClimb installed, it stays passive unless that guest becomes the host.
-- ModConfig text switches between Chinese and English with the game's current language.
+- `BepInEx/plugins/Thanks.Fog&ColdControl.dll`
+  The mod itself.
+- `README.md`
+  A quick overview of features and settings.
+- `CHANGELOG.md`
+  Feature and fix history for the current release line.
+- `manifest.json`
+  Package metadata.
+- `icon.png`
+  Package icon.
 
-## What the mod does
+## Main features
 
-- Starts FogClimb by default.
-- Lets the host control fog speed and fog delay from ModConfig.
-- Shows a fog HUD in the lobby and during active gameplay.
-- Gives players a normal compass after the opening fog delay and after each campfire lighting.
-- Keeps Caldera and The Kiln fully fog-free in FogClimb.
-- Preserves the intended late-game handling around Peak.
+- Host-only fog control for offline and multiplayer runs.
+- Synced fog timing, fog state, and cold handling for guests.
+- Separate handling for fog cold and night cold.
+- Compact bottom HUD for fog status, delay, distance, ETA, and state.
+- Optional top-screen campfire locator HUD while the player is inside fog.
+- Optional compass rewards and manual compass spawning.
+- Automatic Chinese or English config names based on the current game language.
+- Config file names, sections, keys, and descriptions that follow the current game language.
+- `Caldera` and `The Kiln` stay disabled in this mode.
 
-## Night cold handling
+## Config sections
 
-- `Suppress Fog Cold` only affects the cold caused by the fog itself.
-- `Night Cold` only affects FogClimb's night-cold handling.
-- Normal night cold is not removed by FogClimb.
-- If `Night Cold` is enabled and vanilla night cold stops applying correctly, FogClimb can restore it from the host side.
-- The game's official `Night Cold` setting still applies. If the official setting is off, FogClimb will not force night cold back on.
-- Caldera and The Kiln keep the game's own late-game no-fog-cold behavior.
+### Basic
 
-## Config options
+- `Enable Mod`
+  Master switch for the whole mod.
+- `Suppress Fog Cold`
+  Blocks cold caused by fog only.
+- `Night Cold`
+  Controls night cold separately from fog cold.
+- `Fog Speed`
+  Controls how fast the fog moves. Range: `0.3` to `20`. Default: `0.4`.
+- `Fog Delay (s)`
+  Controls how long the first fog segment waits before moving. Range: `20` to `1000`. Default: `900`.
+- `Compass Feature`
+  Enables or disables compass rewards, the compass hotkey, and the lobby prompt. Default: `OFF`.
+- `Compass Hotkey`
+  Spawns a normal compass in front of the player.
+- `Pause Fog Hotkey`
+  Host-only hotkey for pausing or resuming fog movement.
+- `Fog UI`
+  Shows or hides the bottom fog HUD.
+- `Campfire Locator HUD`
+  Shows or hides the top-screen campfire direction HUD. Default: `ON`.
 
-- `Enabled`: turns FogClimb on or off.
-- `Suppress Fog Cold`: removes fog-caused cold without removing normal night cold.
-- `Night Cold`: controls FogClimb's night-cold handling only.
-- `Fog Speed`: controls how fast the fog moves. Range: `0.3` to `20`.
-- `Fog Delay`: controls how long the fog waits before moving after the buffer finishes. Range: `0` to `1000` seconds.
-- `Compass Feature`: master switch for compass rewards, manual compass spawning, and the lobby prompt. Disabled by default.
-- `Compass Hotkey`: spawns a normal compass in front of the local player.
-- `Pause Fog Hotkey`: host-only hotkey to pause or resume fog movement.
-- `Fog UI`: shows or hides the fog HUD.
-- `Fog UI X Position`: moves the HUD horizontally.
-- `Fog UI Y Position`: moves the HUD vertically.
-- `Fog UI Scale`: changes the HUD size.
+### Adjustments
 
-## Offline and online
+- `UI X Position`
+  Moves the bottom fog HUD horizontally.
+- `UI Y Position`
+  Moves the bottom fog HUD vertically.
+- `UI Scale`
+  Changes the overall size of the bottom fog HUD.
 
-- Offline: FogClimb runs fully local and uses the same rules as multiplayer.
-- Online: only the host runs the main fog logic and syncs the result to the room.
-- Guests do not need the mod for fog timing, compass rewards, or night-cold recovery to work.
+## Compass behavior
+
+- The opening fog start can grant a compass when the compass feature is enabled.
+- Campfires only grant a compass when they actually begin a new fog segment.
+- Final no-fog campfires do not grant compasses.
+- The manual compass hotkey uses a normal compass item.
+- The lobby prompt only appears when the compass feature is enabled and the hotkey is valid.
+
+## Multiplayer behavior
+
+- The host is the only side that controls fog state, fog timing, and cold correction.
+- Guests without the mod can still join and play normally.
+- Guests with the mod installed stay passive unless they become the host.
 
 ## Install
 
 1. Install BepInEx for PEAK.
-2. Put `com.github.Thanks.FogClimb.dll` into `BepInEx/plugins`.
-3. Launch the game and host a room, or play offline.
+2. Put `Thanks.Fog&ColdControl.dll` into `BepInEx/plugins`.
+3. Start the game and host a room, or play offline.

@@ -1,14 +1,14 @@
 using System;
 using HarmonyLib;
 
-namespace FogClimb;
+namespace FogColdControl;
 
 [HarmonyPatch(typeof(Fog), "MakePlayerCold")]
 internal static class FogMakePlayerColdPatch
 {
 	private static bool Prefix()
 	{
-		return !Plugin.ShouldSuppressFogColdDamage();
+		return !Plugin.ShouldSuppressFogColdLocally();
 	}
 }
 
