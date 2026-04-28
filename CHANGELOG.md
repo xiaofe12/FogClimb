@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1
+
+### Changes
+
+- Let the game handle fog behavior from `Caldera` onward instead of forcing mod-managed fog coverage or synthetic fog stages there.
+
 ## 1.0.0
 
 ### Features

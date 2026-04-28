@@ -3,7 +3,7 @@
 Fog&ColdControl is a host-driven PEAK mod that turns the climb into a rising-fog run with separate fog-cold and night-cold control.
 Only the host needs to install it. Guests can join normally and follow the host's fog state without installing the mod.
 
-Version: `1.0.0`
+Version: `1.0.1`
 
 ## Package contents
 

@@ -935,12 +935,20 @@ public sealed class Plugin : BaseUnityPlugin
 		FogSphereOrigin[] origins = ResolveFogOrigins(fogHandler);
 		for (int i = 0; i < origins.Length; i++)
 		{
+			if (ShouldDeferFogToVanillaForSegment((Segment)i))
+			{
+				continue;
+			}
 			FogSphereOrigin origin = origins[i];
 			if (origin == null || !origin.disableFog)
 			{
 				continue;
 			}
 			origin.disableFog = false;
+		}
+		if (ShouldDeferFogToVanillaInCurrentScene())
+		{
+			return;
 		}
 		FogSphere sphere = ResolveFogSphere(fogHandler);
 		if (sphere == null)
@@ -1093,12 +1101,12 @@ public sealed class Plugin : BaseUnityPlugin
 			return;
 		}
 		ClampConfigValues();
-		if (IsFogRemovedInCurrentScene())
+		if (ShouldDeferFogToVanillaInCurrentScene())
 		{
 			ClearSyntheticFogStage();
 			_pendingSyntheticFogSegmentId = -1;
 			_delayedFogOriginId = -1;
-			ApplyRemovedFogState();
+			RestoreVanillaFogSpeed();
 			return;
 		}
 		TryAlignFogOriginToCurrentSegment();
@@ -1381,7 +1389,12 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private static bool ShouldUseCustomFogPositionForSegment(Segment segment)
 	{
-		return segment >= Segment.Peak;
+		return segment >= Segment.Peak && !ShouldDeferFogToVanillaForSegment(segment);
+	}
+
+	private static bool ShouldDeferFogToVanillaForSegment(Segment segment)
+	{
+		return segment >= Segment.Caldera;
 	}
 
 	private static bool ShouldRemoveFogForSegment(Segment segment)
@@ -1408,6 +1421,11 @@ public sealed class Plugin : BaseUnityPlugin
 	private static bool IsFogRemovedInCurrentScene()
 	{
 		return TryGetCurrentGameplaySegment(out Segment segment) && ShouldRemoveFogForSegment(segment);
+	}
+
+	private static bool ShouldDeferFogToVanillaInCurrentScene()
+	{
+		return TryGetCurrentGameplaySegment(out Segment segment) && ShouldDeferFogToVanillaForSegment(segment);
 	}
 
 	private void ApplyRemovedFogState()
@@ -2251,7 +2269,7 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return false;
 		}
-		if (ShouldRemoveFogForSegment(MapHandler.CurrentSegmentNumber))
+		if (ShouldDeferFogToVanillaForSegment(MapHandler.CurrentSegmentNumber))
 		{
 			return false;
 		}
@@ -2477,6 +2495,11 @@ public sealed class Plugin : BaseUnityPlugin
 			ResetFogStateSyncSnapshot();
 			return;
 		}
+		if (ShouldDeferFogToVanillaInCurrentScene())
+		{
+			ResetFogStateSyncSnapshot();
+			return;
+		}
 		if (HasRemotePlayersInJoinGracePeriod())
 		{
 			return;
@@ -2526,6 +2549,11 @@ public sealed class Plugin : BaseUnityPlugin
 	private void SyncFogStateToGuestsIfNeeded()
 	{
 		if (_orbFogHandler == null || !HasRemotePlayers() || !PhotonNetwork.IsMasterClient)
+		{
+			ResetFogStateSyncSnapshot();
+			return;
+		}
+		if (ShouldDeferFogToVanillaInCurrentScene())
 		{
 			ResetFogStateSyncSnapshot();
 			return;
@@ -6446,7 +6474,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	internal static bool ShouldForceFogCoverageEverywhere()
 	{
-		return HasFogAuthority() && IsModFeatureEnabled();
+		return HasFogAuthority() && IsModFeatureEnabled() && !ShouldDeferFogToVanillaInCurrentScene();
 	}
 
 	internal static void NotifyFogHandlerChanged(OrbFogHandler fogHandler)
@@ -6529,6 +6557,10 @@ public sealed class Plugin : BaseUnityPlugin
 	internal static bool ShouldBlockVanillaOrbFogWait(OrbFogHandler fogHandler)
 	{
 		if (!IsModFeatureEnabled() || Instance == null || fogHandler == null || !HasFogAuthority())
+		{
+			return false;
+		}
+		if (ShouldDeferFogToVanillaInCurrentScene())
 		{
 			return false;
 		}
