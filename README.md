@@ -3,7 +3,7 @@
 Fog&ColdControl is a host-driven PEAK mod that turns the climb into a rising-fog run with separate fog-cold and night-cold control.
 Only the host needs to install it. Guests can join normally and follow the host's fog state without installing the mod.
 
-Version: `1.0.1`
+Version: `1.0.3`
 
 ## Package contents
 
@@ -34,8 +34,6 @@ Version: `1.0.1`
 
 ### Basic
 
-- `Enable Mod`
-  Master switch for the whole mod.
 - `Suppress Fog Cold`
   Blocks cold caused by fog only.
 - `Night Cold`
@@ -44,19 +42,21 @@ Version: `1.0.1`
   Controls how fast the fog moves. Range: `0.3` to `20`. Default: `0.4`.
 - `Fog Delay (s)`
   Controls how long the first fog segment waits before moving. Range: `20` to `1000`. Default: `900`.
-- `Compass Feature`
-  Enables or disables compass rewards, the compass hotkey, and the lobby prompt. Default: `OFF`.
-- `Compass Hotkey`
-  Spawns a normal compass in front of the player.
 - `Pause Fog Hotkey`
   Host-only hotkey for pausing or resuming fog movement.
+
+### Adjustments
+
+- `Enable Mod`
+  Master switch for the whole mod.
 - `Fog UI`
   Shows or hides the bottom fog HUD.
 - `Campfire Locator HUD`
   Shows or hides the top-screen campfire direction HUD. Default: `ON`.
-
-### Adjustments
-
+- `Compass Feature`
+  Enables or disables compass rewards, the compass hotkey, and the lobby prompt. Default: `OFF`.
+- `Compass Hotkey`
+  Spawns a normal compass in front of the player.
 - `UI X Position`
   Moves the bottom fog HUD horizontally.
 - `UI Y Position`

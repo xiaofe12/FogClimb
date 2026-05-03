@@ -57,7 +57,9 @@ public sealed class Plugin : BaseUnityPlugin
 		Direct,
 		Pause,
 		FogHandling,
-		Night
+		Night,
+		DayTime,
+		NightTime
 	}
 
 	private sealed class FogUiEntryView
@@ -68,11 +70,38 @@ public sealed class Plugin : BaseUnityPlugin
 
 		public TextMeshProUGUI Text;
 
+		public RectTransform BarRoot;
+
+		public Image BarBackground;
+
+		public Image BarFill;
+
+		public TextMeshProUGUI BarText;
+
 		public string LastText = string.Empty;
 
 		public FogUiIconKind LastIconKind;
 
 		public Color LastIconColor = Color.clear;
+
+		public float LastProgress = -1f;
+
+		public Color LastBarFillColor = Color.clear;
+
+		public Color LastBarBackgroundColor = Color.clear;
+
+		public string LastBarText = string.Empty;
+	}
+
+	private sealed class ConfigFileEntryBlock
+	{
+		public ConfigKey Key;
+
+		public bool HasKnownKey;
+
+		public string SectionName = string.Empty;
+
+		public List<string> Lines = new List<string>();
 	}
 
 	private readonly struct FogUiDisplayEntry
@@ -83,11 +112,36 @@ public sealed class Plugin : BaseUnityPlugin
 
 		public readonly string Text;
 
+		public readonly bool HasProgressBar;
+
+		public readonly float Progress;
+
+		public readonly Color BarFillColor;
+
+		public readonly Color BarBackgroundColor;
+
+		public readonly string BarText;
+
 		public FogUiDisplayEntry(FogUiIconKind kind, Color iconColor, string text)
+			: this(kind, iconColor, text, false, 0f, Color.white, Color.clear, string.Empty)
+		{
+		}
+
+		public FogUiDisplayEntry(FogUiIconKind kind, Color iconColor, string text, float progress, Color barFillColor, Color barBackgroundColor, string barText)
+			: this(kind, iconColor, text, true, progress, barFillColor, barBackgroundColor, barText)
+		{
+		}
+
+		private FogUiDisplayEntry(FogUiIconKind kind, Color iconColor, string text, bool hasProgressBar, float progress, Color barFillColor, Color barBackgroundColor, string barText)
 		{
 			Kind = kind;
 			IconColor = iconColor;
 			Text = text ?? string.Empty;
+			HasProgressBar = hasProgressBar;
+			Progress = Mathf.Clamp01(progress);
+			BarFillColor = barFillColor;
+			BarBackgroundColor = barBackgroundColor;
+			BarText = barText ?? string.Empty;
 		}
 	}
 
@@ -95,7 +149,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	public const string PluginName = "Fog&ColdControl";
 
-	public const string PluginVersion = "1.0.0";
+	public const string PluginVersion = "1.0.3";
 
 	private const string PreferredConfigFileName = "Thanks.Fog&ColdControl.cfg";
 
@@ -188,6 +242,12 @@ public sealed class Plugin : BaseUnityPlugin
 	private const float FogEtaWarningWindowSeconds = 90f;
 
 	private const float FogEtaDisplayStepSeconds = 0.5f;
+
+	private const float FogEtaIncreaseNoiseToleranceSeconds = 2f;
+
+	private const float FogEtaMaxDisplayIncreasePerSecond = 1.5f;
+
+	private const float FogEtaMaxExtraDisplayDecreasePerSecond = 3f;
 
 	private const float FogDistanceDangerWindowUnits = 120f;
 
@@ -309,6 +369,18 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private const string FogUiNightDisabledColor = "#FFB3B3";
 
+	private const string FogUiDayTimeColor = "#FFE38A";
+
+	private const string FogUiNightTimeColor = "#AFC6FF";
+
+	private const string FogUiTimeBarEmptyColor = "#56606C";
+
+	private const string FogUiTimeBarTextColor = "#FFFFFF";
+
+	private const float FogUiTimeProgressBarWidth = 128f;
+
+	private const float FogUiTimeProgressBarHeight = 17f;
+
 	// Manual entry point for adjusting the granted compass item when auto-detection is wrong.
 	private static readonly ushort CompassItemIdOverride = 0;
 
@@ -321,6 +393,10 @@ public sealed class Plugin : BaseUnityPlugin
 	private const string CanonicalBasicConfigSectionName = "Basic";
 
 	private const string CanonicalAdjustmentConfigSectionName = "Adjustments";
+
+	private const string ChineseBasicConfigSectionName = "\u57FA\u672C";
+
+	private const string ChineseAdjustmentConfigSectionName = "\u8C03\u6574";
 
 	private const string NetworkInstallStateKey = "FogClimb.Enabled";
 
@@ -340,15 +416,42 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private static readonly FieldInfo OrbFogHandlerSphereField = typeof(OrbFogHandler).GetField("sphere", InstanceBindingFlags);
 
+	private static readonly FieldInfo CharacterAfflictionsCurrentStatusesField = typeof(CharacterAfflictions).GetField("currentStatuses", InstanceBindingFlags);
+
+	private static readonly FieldInfo CharacterAfflictionsCurrentIncrementalStatusesField = typeof(CharacterAfflictions).GetField("currentIncrementalStatuses", InstanceBindingFlags);
+
+	private static readonly FieldInfo CharacterAfflictionsCurrentDecrementalStatusesField = typeof(CharacterAfflictions).GetField("currentDecrementalStatuses", InstanceBindingFlags);
+
 	private static readonly int StatusTypeCount = Enum.GetNames(typeof(CharacterAfflictions.STATUSTYPE)).Length;
 
-	private static readonly string[] DayNightTimeMemberCandidates = new string[5] { "currentTime", "time", "timeOfDay", "timeNormalized", "cycleTime" };
+	private static readonly string[] DayNightTimeMemberCandidates = new string[6] { "timeOfDayNormalized", "currentTime", "time", "timeOfDay", "timeNormalized", "cycleTime" };
+
+	private static readonly ConfigKey[] BasicConfigFileOrder = new ConfigKey[5]
+	{
+		ConfigKey.FogColdSuppression,
+		ConfigKey.NightColdEnabled,
+		ConfigKey.FogSpeed,
+		ConfigKey.FogDelay,
+		ConfigKey.FogPauseHotkey
+	};
+
+	private static readonly ConfigKey[] AdjustmentConfigFileOrder = new ConfigKey[8]
+	{
+		ConfigKey.ModEnabled,
+		ConfigKey.FogUiEnabled,
+		ConfigKey.CampfireLocatorUiEnabled,
+		ConfigKey.CompassEnabled,
+		ConfigKey.CompassHotkey,
+		ConfigKey.FogUiX,
+		ConfigKey.FogUiY,
+		ConfigKey.FogUiScale
+	};
 
 	private static readonly Color CampfireLocatorLineColor = new Color(1f, 1f, 1f, 0.95f);
 
 	private static readonly Color CampfireLocatorDotColor = new Color(1f, 0.2f, 0.2f, 1f);
 
-	private static int _localFogStatusSuppressionDepth;
+	private static int _localFogStatusSourceDepth;
 
 	private Harmony _harmony;
 
@@ -391,6 +494,8 @@ public sealed class Plugin : BaseUnityPlugin
 	private bool _pendingConfigFileLocalizationRefresh;
 
 	private bool _pendingConfigFileLocalizationSave;
+
+	private bool _pendingConfigFileOrderRefresh;
 
 	private float _lastFogUiX;
 
@@ -565,16 +670,16 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private void InitializeConfig(bool isChineseLanguage)
 	{
-		ModEnabled = Config.Bind(GetConfigSectionName(ConfigKey.ModEnabled), GetConfigKeyName(ConfigKey.ModEnabled), true, CreateConfigDescription(ConfigKey.ModEnabled, isChineseLanguage));
 		FogColdSuppression = Config.Bind(GetConfigSectionName(ConfigKey.FogColdSuppression), GetConfigKeyName(ConfigKey.FogColdSuppression), false, CreateConfigDescription(ConfigKey.FogColdSuppression, isChineseLanguage));
 		NightColdEnabled = Config.Bind(GetConfigSectionName(ConfigKey.NightColdEnabled), GetConfigKeyName(ConfigKey.NightColdEnabled), true, CreateConfigDescription(ConfigKey.NightColdEnabled, isChineseLanguage));
 		FogSpeed = Config.Bind(GetConfigSectionName(ConfigKey.FogSpeed), GetConfigKeyName(ConfigKey.FogSpeed), DefaultFogSpeed, CreateConfigDescription(ConfigKey.FogSpeed, isChineseLanguage));
 		FogDelay = Config.Bind(GetConfigSectionName(ConfigKey.FogDelay), GetConfigKeyName(ConfigKey.FogDelay), DefaultFogDelaySeconds, CreateConfigDescription(ConfigKey.FogDelay, isChineseLanguage));
-		CompassEnabled = Config.Bind(GetConfigSectionName(ConfigKey.CompassEnabled), GetConfigKeyName(ConfigKey.CompassEnabled), false, CreateConfigDescription(ConfigKey.CompassEnabled, isChineseLanguage));
-		CompassHotkey = Config.Bind(GetConfigSectionName(ConfigKey.CompassHotkey), GetConfigKeyName(ConfigKey.CompassHotkey), KeyCode.G, CreateConfigDescription(ConfigKey.CompassHotkey, isChineseLanguage));
 		FogPauseHotkey = Config.Bind(GetConfigSectionName(ConfigKey.FogPauseHotkey), GetConfigKeyName(ConfigKey.FogPauseHotkey), KeyCode.Y, CreateConfigDescription(ConfigKey.FogPauseHotkey, isChineseLanguage));
+		ModEnabled = Config.Bind(GetConfigSectionName(ConfigKey.ModEnabled), GetConfigKeyName(ConfigKey.ModEnabled), true, CreateConfigDescription(ConfigKey.ModEnabled, isChineseLanguage));
 		FogUiEnabled = Config.Bind(GetConfigSectionName(ConfigKey.FogUiEnabled), GetConfigKeyName(ConfigKey.FogUiEnabled), true, CreateConfigDescription(ConfigKey.FogUiEnabled, isChineseLanguage));
 		CampfireLocatorUiEnabled = Config.Bind(GetConfigSectionName(ConfigKey.CampfireLocatorUiEnabled), GetConfigKeyName(ConfigKey.CampfireLocatorUiEnabled), true, CreateConfigDescription(ConfigKey.CampfireLocatorUiEnabled, isChineseLanguage));
+		CompassEnabled = Config.Bind(GetConfigSectionName(ConfigKey.CompassEnabled), GetConfigKeyName(ConfigKey.CompassEnabled), false, CreateConfigDescription(ConfigKey.CompassEnabled, isChineseLanguage));
+		CompassHotkey = Config.Bind(GetConfigSectionName(ConfigKey.CompassHotkey), GetConfigKeyName(ConfigKey.CompassHotkey), KeyCode.G, CreateConfigDescription(ConfigKey.CompassHotkey, isChineseLanguage));
 		FogUiX = Config.Bind(GetConfigSectionName(ConfigKey.FogUiX), GetConfigKeyName(ConfigKey.FogUiX), DefaultFogUiX, CreateConfigDescription(ConfigKey.FogUiX, isChineseLanguage));
 		FogUiY = Config.Bind(GetConfigSectionName(ConfigKey.FogUiY), GetConfigKeyName(ConfigKey.FogUiY), DefaultFogUiY, CreateConfigDescription(ConfigKey.FogUiY, isChineseLanguage));
 		FogUiScale = Config.Bind(GetConfigSectionName(ConfigKey.FogUiScale), GetConfigKeyName(ConfigKey.FogUiScale), DefaultFogUiScale, CreateConfigDescription(ConfigKey.FogUiScale, isChineseLanguage));
@@ -660,6 +765,7 @@ public sealed class Plugin : BaseUnityPlugin
 		if (migratedAnyValue)
 		{
 			Config.Save();
+			MarkConfigFileLocalizationDirty(saveConfigFile: false, reorderConfigFile: true);
 		}
 	}
 
@@ -701,6 +807,7 @@ public sealed class Plugin : BaseUnityPlugin
 			GetLegacyConfigSectionName(),
 			GetLegacySectionName(isChineseLanguage: true)
 		}
+			.Concat(GetLegacySectionNames(configKey))
 			.Where(section => !string.IsNullOrWhiteSpace(section))
 			.Distinct(StringComparer.Ordinal)
 			.ToArray();
@@ -709,6 +816,41 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			yield return new ConfigDefinition(section, canonicalKey);
 			yield return new ConfigDefinition(section, chineseKey);
+			foreach (string legacyKey in GetLegacyKeyNames(configKey))
+			{
+				yield return new ConfigDefinition(section, legacyKey);
+			}
+		}
+	}
+
+	private static IEnumerable<string> GetLegacySectionNames(ConfigKey configKey)
+	{
+		if (!HasBasicSectionLegacyAlias(configKey))
+		{
+			yield break;
+		}
+		yield return GetBasicSectionName(isChineseLanguage: false);
+		yield return GetBasicSectionName(isChineseLanguage: true);
+	}
+
+	private static bool HasBasicSectionLegacyAlias(ConfigKey configKey)
+	{
+		return configKey == ConfigKey.ModEnabled
+			|| configKey == ConfigKey.FogUiEnabled
+			|| configKey == ConfigKey.CampfireLocatorUiEnabled
+			|| configKey == ConfigKey.CompassEnabled
+			|| configKey == ConfigKey.CompassHotkey;
+	}
+
+	private static IEnumerable<string> GetLegacyKeyNames(ConfigKey configKey)
+	{
+		if (configKey == ConfigKey.FogColdSuppression)
+		{
+			yield return "\u6BD2\u96FE\u5BD2\u51B7";
+		}
+		if (configKey == ConfigKey.CampfireLocatorUiEnabled)
+		{
+			yield return "\u7BED\u706B\u4F4D\u7F6E HUD";
 		}
 	}
 
@@ -797,10 +939,11 @@ public sealed class Plugin : BaseUnityPlugin
 		MarkConfigFileLocalizationDirty(saveConfigFile: false);
 	}
 
-	private void MarkConfigFileLocalizationDirty(bool saveConfigFile)
+	private void MarkConfigFileLocalizationDirty(bool saveConfigFile, bool reorderConfigFile = false)
 	{
 		_pendingConfigFileLocalizationRefresh = true;
 		_pendingConfigFileLocalizationSave |= saveConfigFile;
+		_pendingConfigFileOrderRefresh |= reorderConfigFile;
 	}
 
 	private void HandlePendingConfigFileLocalizationRefresh()
@@ -811,9 +954,11 @@ public sealed class Plugin : BaseUnityPlugin
 		}
 		bool isChineseLanguage = _lastDetectedChineseLanguage;
 		bool saveConfigFile = _pendingConfigFileLocalizationSave;
+		bool reorderConfigFile = _pendingConfigFileOrderRefresh;
 		_pendingConfigFileLocalizationRefresh = false;
 		_pendingConfigFileLocalizationSave = false;
-		TryRefreshLocalizedConfigFile(isChineseLanguage, saveConfigFile);
+		_pendingConfigFileOrderRefresh = false;
+		TryRefreshLocalizedConfigFile(isChineseLanguage, saveConfigFile, reorderConfigFile);
 	}
 
 	private void Update()
@@ -870,6 +1015,7 @@ public sealed class Plugin : BaseUnityPlugin
 			SyncRemoteStatusSuppressionIfNeeded();
 			SyncCompassGrantsToPlayersIfNeeded();
 		}
+		SuppressHostManagedStatusesIfNeeded();
 		UpdateFogArrivalEstimate();
 		UpdateFogUi();
 		UpdateCampfireLocatorUi();
@@ -2130,13 +2276,61 @@ public sealed class Plugin : BaseUnityPlugin
 		currentSize = GetDisplayedFogEtaSize();
 		fogPoint = Vector3.zero;
 		playerPoint = Vector3.zero;
-		Character localCharacter = Character.localCharacter;
-		if (localCharacter == null || localCharacter.data == null || localCharacter.data.dead)
+		if (!TryResolveFogUiSubjectPosition(out playerPoint))
 		{
 			return false;
 		}
-		playerPoint = localCharacter.Center;
 		return TryResolveFogPointForCurrentOrigin(out fogPoint, out _);
+	}
+
+	private static bool TryResolveFogUiSubjectPosition(out Vector3 subjectPosition)
+	{
+		subjectPosition = Vector3.zero;
+		Character localCharacter = Character.localCharacter;
+		if (IsUsableFogUiSubject(localCharacter))
+		{
+			subjectPosition = localCharacter.Center;
+			return true;
+		}
+		Character observedCharacter = TryGetObservedCharacter();
+		if (observedCharacter == localCharacter || !IsUsableFogUiSubject(observedCharacter))
+		{
+			return false;
+		}
+		subjectPosition = observedCharacter.Center;
+		return true;
+	}
+
+	private static Character TryGetObservedCharacter()
+	{
+		try
+		{
+			Character observedCharacter = MainCameraMovement.specCharacter;
+			if (observedCharacter != null)
+			{
+				return observedCharacter;
+			}
+		}
+		catch
+		{
+		}
+		try
+		{
+			return Character.observedCharacter;
+		}
+		catch
+		{
+			return null;
+		}
+	}
+
+	private static bool IsUsableFogUiSubject(Character character)
+	{
+		return character != null
+			&& character.data != null
+			&& !character.data.dead
+			&& !character.isBot
+			&& !character.isZombie;
 	}
 
 	private float GetObservedFogEtaSize()
@@ -2204,24 +2398,51 @@ public sealed class Plugin : BaseUnityPlugin
 			ResetFogArrivalMetricsCache();
 			return;
 		}
+		float previousRefreshTime = _fogDistanceEtaLastRefreshTime;
 		float remainingDistance = Mathf.Max(currentSize - Vector3.Distance(fogPoint, playerPoint), 0f);
-		_fogDistanceEtaLastRefreshTime = now;
 		_fogDistanceEtaHasSnapshot = true;
 		_fogDistanceEtaRemainingDistance = remainingDistance;
 		if (remainingDistance <= 0.05f)
 		{
 			_fogDistanceEtaHasEta = true;
 			_fogDistanceEtaSeconds = 0f;
+			_fogDistanceEtaLastRefreshTime = now;
 			return;
 		}
 		if (!TryResolveFogEtaRate(out float etaRate))
 		{
 			_fogDistanceEtaHasEta = false;
 			_fogDistanceEtaSeconds = 0f;
+			_fogDistanceEtaLastRefreshTime = now;
 			return;
 		}
+		float rawEtaSeconds = remainingDistance / etaRate;
 		_fogDistanceEtaHasEta = true;
-		_fogDistanceEtaSeconds = remainingDistance / etaRate;
+		_fogDistanceEtaSeconds = StabilizeFogEtaSeconds(rawEtaSeconds, now, previousRefreshTime);
+		_fogDistanceEtaLastRefreshTime = now;
+	}
+
+	private float StabilizeFogEtaSeconds(float rawEtaSeconds, float now, float previousRefreshTime)
+	{
+		rawEtaSeconds = Mathf.Max(rawEtaSeconds, 0f);
+		if (!_fogDistanceEtaHasEta || previousRefreshTime < 0f || _fogDistanceEtaSeconds <= 0f || rawEtaSeconds <= FogEtaDisplayStepSeconds)
+		{
+			return rawEtaSeconds;
+		}
+		float elapsed = Mathf.Max(now - previousRefreshTime, 0f);
+		float expectedCountdown = Mathf.Max(_fogDistanceEtaSeconds - elapsed, 0f);
+		if (rawEtaSeconds > expectedCountdown)
+		{
+			float increase = rawEtaSeconds - expectedCountdown;
+			if (increase <= FogEtaIncreaseNoiseToleranceSeconds)
+			{
+				return expectedCountdown;
+			}
+			float maxIncrease = Mathf.Max(FogEtaDisplayStepSeconds, elapsed * FogEtaMaxDisplayIncreasePerSecond);
+			return Mathf.Min(rawEtaSeconds, expectedCountdown + maxIncrease);
+		}
+		float maxDecrease = elapsed + Mathf.Max(FogEtaDisplayStepSeconds, elapsed * FogEtaMaxExtraDisplayDecreasePerSecond);
+		return Mathf.Max(rawEtaSeconds, expectedCountdown - maxDecrease);
 	}
 
 	private bool TryResolveFogEtaRate(out float etaRate)
@@ -2610,7 +2831,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private void SyncRemoteStatusSuppressionIfNeeded()
 	{
-		if (!ShouldSuppressFogColdDamage() || !HasRemotePlayers() || !PhotonNetwork.IsMasterClient)
+		if (!ShouldSuppressHostManagedStatusDamage() || !HasRemotePlayers() || !PhotonNetwork.IsMasterClient)
 		{
 			_remoteFogSuppressionDebt.Clear();
 			_remoteFogSporesSuppressionDebt.Clear();
@@ -2661,7 +2882,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private bool ShouldDisableNightColdInCurrentStage()
 	{
-		return !IsNightColdFeatureEnabled()
+		return ShouldDisableNightColdFeatureLocally()
 			&& IsNightColdStageActive()
 			&& TryIsNightTime(out _);
 	}
@@ -2682,9 +2903,85 @@ public sealed class Plugin : BaseUnityPlugin
 			&& !character.data.dead
 			&& !character.isBot
 			&& !character.isZombie
-			&& !IsNightColdFeatureEnabled()
+			&& ShouldDisableNightColdFeatureLocally()
 			&& IsNightColdStageActive()
 			&& TryIsNightTime(out _);
+	}
+
+	private void SuppressHostManagedStatusesIfNeeded()
+	{
+		if (!ShouldSuppressHostManagedStatusDamage())
+		{
+			return;
+		}
+		foreach (Character character in Character.AllCharacters)
+		{
+			if (character?.data == null || character.data.dead || character.isBot || character.isZombie || character.refs == null || character.refs.afflictions == null)
+			{
+				continue;
+			}
+			bool isInsideFog = IsCharacterInsideAnyFog(character);
+			bool suppressFogCold = ShouldSuppressFogColdDamage() && isInsideFog;
+			bool suppressNightCold = ShouldSuppressConfiguredNightCold(character) && (suppressFogCold || !isInsideFog);
+			bool preserveLateGameNoCold = ShouldPreserveVanillaLateGameNoCold() && isInsideFog;
+			if (suppressNightCold || preserveLateGameNoCold)
+			{
+				SetStatusWithoutChunkRemoval(character.refs.afflictions, GetFogSuppressionStatusType(character), 0f);
+			}
+			if (suppressFogCold)
+			{
+				SetStatusWithoutChunkRemoval(character.refs.afflictions, CharacterAfflictions.STATUSTYPE.Spores, 0f);
+			}
+		}
+	}
+
+	private static bool SetStatusWithoutChunkRemoval(CharacterAfflictions afflictions, CharacterAfflictions.STATUSTYPE statusType, float value)
+	{
+		if (afflictions == null)
+		{
+			return false;
+		}
+		int index = (int)statusType;
+		if (index < 0 || index >= StatusTypeCount)
+		{
+			return false;
+		}
+		float clampedValue = Mathf.Max(value, 0f);
+		if (IsOwnedAfflictionsInstance(afflictions))
+		{
+			afflictions.SetStatus(statusType, clampedValue, false);
+			return true;
+		}
+		bool changed = TrySetStatusArrayValue(CharacterAfflictionsCurrentStatusesField, afflictions, index, clampedValue);
+		changed |= TrySetStatusArrayValue(CharacterAfflictionsCurrentIncrementalStatusesField, afflictions, index, 0f);
+		changed |= TrySetStatusArrayValue(CharacterAfflictionsCurrentDecrementalStatusesField, afflictions, index, 0f);
+		return changed;
+	}
+
+	private static bool IsOwnedAfflictionsInstance(CharacterAfflictions afflictions)
+	{
+		try
+		{
+			return afflictions?.character != null && afflictions.character.photonView != null && afflictions.character.photonView.IsMine;
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+	private static bool TrySetStatusArrayValue(FieldInfo field, CharacterAfflictions afflictions, int index, float value)
+	{
+		if (field == null || afflictions == null || !(field.GetValue(afflictions) is float[] values) || index < 0 || index >= values.Length)
+		{
+			return false;
+		}
+		if (Mathf.Approximately(values[index], value))
+		{
+			return false;
+		}
+		values[index] = value;
+		return true;
 	}
 
 	private static bool TryIsNightTime(out float currentNormalizedTime)
@@ -2704,10 +3001,28 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return false;
 		}
-		float dayStart = Mathf.Repeat(dayNightManager.dayStart, 1f);
-		float dayEnd = Mathf.Repeat(dayNightManager.dayEnd, 1f);
+		float dayStart = NormalizeDayNightHourValue(dayNightManager.dayStart);
+		float dayEnd = NormalizeDayNightHourValue(dayNightManager.dayEnd);
 		bool isDay = IsTimeWithinWrappedRange(currentNormalizedTime, dayStart, dayEnd);
 		return !isDay;
+	}
+
+	private static bool TryGetDayNightProgress(out bool isDay, out float phaseProgress)
+	{
+		isDay = true;
+		phaseProgress = 0f;
+		DayNightManager dayNightManager = DayNightManager.instance ?? UnityEngine.Object.FindAnyObjectByType<DayNightManager>();
+		if (dayNightManager == null || !TryGetCurrentDayNightTimeNormalized(dayNightManager, out float currentNormalizedTime))
+		{
+			return false;
+		}
+		float dayStart = NormalizeDayNightHourValue(dayNightManager.dayStart);
+		float dayEnd = NormalizeDayNightHourValue(dayNightManager.dayEnd);
+		isDay = IsTimeWithinWrappedRange(currentNormalizedTime, dayStart, dayEnd);
+		phaseProgress = isDay
+			? GetWrappedRangeProgress(currentNormalizedTime, dayStart, dayEnd)
+			: GetWrappedRangeProgress(currentNormalizedTime, dayEnd, dayStart);
+		return true;
 	}
 
 	private static bool TryGetIsDayFactor(DayNightManager dayNightManager, out float isDayFactor)
@@ -2749,6 +3064,20 @@ public sealed class Plugin : BaseUnityPlugin
 		return value >= rangeStart || value < rangeEnd;
 	}
 
+	private static float GetWrappedRangeProgress(float value, float rangeStart, float rangeEnd)
+	{
+		value = Mathf.Repeat(value, 1f);
+		rangeStart = Mathf.Repeat(rangeStart, 1f);
+		rangeEnd = Mathf.Repeat(rangeEnd, 1f);
+		float length = Mathf.Repeat(rangeEnd - rangeStart, 1f);
+		if (length < 0.0001f)
+		{
+			return 1f;
+		}
+		float elapsed = Mathf.Repeat(value - rangeStart, 1f);
+		return Mathf.Clamp01(elapsed / length);
+	}
+
 	private static bool TryGetCurrentDayNightTimeNormalized(DayNightManager dayNightManager, out float currentNormalizedTime)
 	{
 		currentNormalizedTime = 0f;
@@ -2763,17 +3092,45 @@ public sealed class Plugin : BaseUnityPlugin
 			PropertyInfo property = managerType.GetProperty(memberName, InstanceBindingFlags);
 			if (TryReadSingleValue(property?.GetValue(dayNightManager), out float propertyValue))
 			{
-				currentNormalizedTime = Mathf.Repeat(propertyValue, 1f);
+				currentNormalizedTime = NormalizeDayNightMemberValue(memberName, propertyValue);
 				return true;
 			}
 			FieldInfo field = managerType.GetField(memberName, InstanceBindingFlags);
 			if (TryReadSingleValue(field?.GetValue(dayNightManager), out float fieldValue))
 			{
-				currentNormalizedTime = Mathf.Repeat(fieldValue, 1f);
+				currentNormalizedTime = NormalizeDayNightMemberValue(memberName, fieldValue);
 				return true;
 			}
 		}
 		return false;
+	}
+
+	private static float NormalizeDayNightMemberValue(string memberName, float rawValue)
+	{
+		if (string.Equals(memberName, "timeOfDayNormalized", StringComparison.Ordinal)
+			|| string.Equals(memberName, "timeNormalized", StringComparison.Ordinal))
+		{
+			return Mathf.Repeat(rawValue, 1f);
+		}
+		if (string.Equals(memberName, "timeOfDay", StringComparison.Ordinal))
+		{
+			return Mathf.Repeat(rawValue, 24f) / 24f;
+		}
+		return NormalizeDayNightHourValue(rawValue);
+	}
+
+	private static float NormalizeDayNightHourValue(float rawValue)
+	{
+		return NormalizeDayNightHourOfDayValue(rawValue) / 24f;
+	}
+
+	private static float NormalizeDayNightHourOfDayValue(float rawValue)
+	{
+		if (rawValue >= 0f && rawValue <= 1f)
+		{
+			return Mathf.Repeat(rawValue, 1f) * 24f;
+		}
+		return Mathf.Repeat(rawValue, 24f);
 	}
 
 	private static bool TryReadSingleValue(object rawValue, out float value)
@@ -2800,7 +3157,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private static bool ShouldSendRemoteStatusSuppression(Character character)
 	{
-		return ShouldSuppressFogColdDamage()
+		return ShouldSuppressHostManagedStatusDamage()
 			&& HasFogAuthority()
 			&& character != null
 			&& character.photonView != null
@@ -2810,7 +3167,6 @@ public sealed class Plugin : BaseUnityPlugin
 			&& !character.isZombie
 			&& character.data != null
 			&& !character.data.dead
-			&& !HasRemoteFogSuppressionSupport(character.photonView.Owner)
 			&& (Instance == null || Instance.IsCharacterPastJoinGrace(character));
 	}
 
@@ -2821,7 +3177,7 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private float[] BuildRemoteStatusSuppressionPayload(Character character, float elapsed)
 	{
-		if (!ShouldSuppressFogColdDamage())
+		if (!ShouldSuppressHostManagedStatusDamage())
 		{
 			if (character != null)
 			{
@@ -2898,18 +3254,18 @@ public sealed class Plugin : BaseUnityPlugin
 	{
 		coldRatePerSecond = 0f;
 		sporeRatePerSecond = 0f;
-		if (!ShouldSuppressFogColdDamage() || character?.data == null)
+		if (!ShouldSuppressHostManagedStatusDamage() || character?.data == null)
 		{
 			return false;
 		}
 		float fogBaseRatePerSecond = 0f;
 		float fogSporeRatePerSecond = 0f;
-		if (IsCharacterInsideFogSphere(character))
+		if (ShouldSuppressFogColdDamage() && IsCharacterInsideFogSphere(character))
 		{
 			fogBaseRatePerSecond += FogColdPerSecond;
 			fogSporeRatePerSecond += FogSporesPerSecond;
 		}
-		if (IsCharacterInsideLegacyFog(character, out float legacyRate))
+		if (ShouldSuppressFogColdDamage() && IsCharacterInsideLegacyFog(character, out float legacyRate))
 		{
 			fogBaseRatePerSecond += legacyRate;
 			fogSporeRatePerSecond = Mathf.Max(fogSporeRatePerSecond, legacyRate > 0f ? legacyRate : FogSporesPerSecond);
@@ -2924,9 +3280,20 @@ public sealed class Plugin : BaseUnityPlugin
 		}
 		if (ShouldSuppressConfiguredNightCold(character))
 		{
-			coldRatePerSecond += ConvertColdBaseRateToSuppressionRate(character, NightColdPerSecond);
+			coldRatePerSecond += ConvertColdBaseRateToSuppressionRate(character, GetCurrentNightColdBaseRatePerSecond());
 		}
 		return coldRatePerSecond > 0f || sporeRatePerSecond > 0f;
+	}
+
+	private static float GetCurrentNightColdBaseRatePerSecond()
+	{
+		float nightFactor = 1f;
+		DayNightManager dayNightManager = DayNightManager.instance ?? UnityEngine.Object.FindAnyObjectByType<DayNightManager>();
+		if (TryGetIsDayFactor(dayNightManager, out float isDayFactor))
+		{
+			nightFactor = Mathf.Clamp01(1f - isDayFactor);
+		}
+		return Mathf.Max(Ascents.nightColdRate, NightColdPerSecond) * nightFactor;
 	}
 
 	private static float ConvertColdBaseRateToSuppressionRate(Character character, float baseRatePerSecond)
@@ -3795,16 +4162,16 @@ public sealed class Plugin : BaseUnityPlugin
 	{
 		if (dayNightManager == null)
 		{
-			return FallbackNightTimeNormalized;
+			return FallbackNightTimeNormalized * 24f;
 		}
-		float dayStart = Mathf.Repeat(dayNightManager.dayStart, 1f);
-		float dayEnd = Mathf.Repeat(dayNightManager.dayEnd, 1f);
-		float nightDuration = Mathf.Repeat(dayStart - dayEnd, 1f);
+		float dayStart = NormalizeDayNightHourOfDayValue(dayNightManager.dayStart);
+		float dayEnd = NormalizeDayNightHourOfDayValue(dayNightManager.dayEnd);
+		float nightDuration = Mathf.Repeat(dayStart - dayEnd, 24f);
 		if (nightDuration < 0.01f)
 		{
-			return FallbackNightTimeNormalized;
+			return FallbackNightTimeNormalized * 24f;
 		}
-		return Mathf.Repeat(dayEnd + nightDuration * 0.5f, 1f);
+		return Mathf.Repeat(dayEnd + nightDuration * 0.5f, 24f);
 	}
 
 	private void TrySpawnManualCompassForLocalPlayer()
@@ -3953,7 +4320,9 @@ public sealed class Plugin : BaseUnityPlugin
 	{
 		foreach (ConfigKey candidate in Enum.GetValues(typeof(ConfigKey)))
 		{
-			if (string.Equals(keyName, GetConfigKeyName(candidate), StringComparison.OrdinalIgnoreCase) || string.Equals(keyName, GetKeyName(candidate, isChineseLanguage: true), StringComparison.OrdinalIgnoreCase))
+			if (string.Equals(keyName, GetConfigKeyName(candidate), StringComparison.OrdinalIgnoreCase)
+				|| string.Equals(keyName, GetKeyName(candidate, isChineseLanguage: true), StringComparison.OrdinalIgnoreCase)
+				|| GetLegacyKeyNames(candidate).Any(legacyKey => string.Equals(keyName, legacyKey, StringComparison.OrdinalIgnoreCase)))
 			{
 				configKey = candidate;
 				return true;
@@ -3963,7 +4332,7 @@ public sealed class Plugin : BaseUnityPlugin
 		return false;
 	}
 
-	private void TryRefreshLocalizedConfigFile(bool isChineseLanguage, bool saveConfigFile)
+	private void TryRefreshLocalizedConfigFile(bool isChineseLanguage, bool saveConfigFile, bool reorderConfigFile)
 	{
 		try
 		{
@@ -3975,7 +4344,7 @@ public sealed class Plugin : BaseUnityPlugin
 			{
 				Config.Save();
 			}
-			RewriteConfigFileLocalization(Config.ConfigFilePath, isChineseLanguage);
+			RewriteConfigFileLocalization(Config.ConfigFilePath, isChineseLanguage, reorderConfigFile);
 		}
 		catch (Exception ex)
 		{
@@ -3983,7 +4352,7 @@ public sealed class Plugin : BaseUnityPlugin
 		}
 	}
 
-	private static void RewriteConfigFileLocalization(string configFilePath, bool isChineseLanguage)
+	private static void RewriteConfigFileLocalization(string configFilePath, bool isChineseLanguage, bool reorderConfigFile)
 	{
 		if (string.IsNullOrWhiteSpace(configFilePath) || !File.Exists(configFilePath))
 		{
@@ -4002,11 +4371,250 @@ public sealed class Plugin : BaseUnityPlugin
 				changed = true;
 			}
 		}
+		if (reorderConfigFile)
+		{
+			string[] orderedLines = ReorderConfigFileLines(rewrittenLines, isChineseLanguage);
+			if (!rewrittenLines.SequenceEqual(orderedLines))
+			{
+				rewrittenLines = orderedLines;
+				changed = true;
+			}
+		}
 		if (!changed)
 		{
 			return;
 		}
 		File.WriteAllLines(configFilePath, rewrittenLines);
+	}
+
+	private static string[] ReorderConfigFileLines(string[] lines, bool isChineseLanguage)
+	{
+		if (lines == null || lines.Length == 0)
+		{
+			return Array.Empty<string>();
+		}
+		string basicSectionName = GetBasicSectionName(isChineseLanguage);
+		string adjustmentSectionName = GetAdjustmentSectionName(isChineseLanguage);
+		List<string> preambleLines = new List<string>();
+		List<string> pendingBlockLines = new List<string>();
+		Dictionary<ConfigKey, ConfigFileEntryBlock> knownBlocks = new Dictionary<ConfigKey, ConfigFileEntryBlock>();
+		Dictionary<string, List<ConfigFileEntryBlock>> unknownBlocksBySection = new Dictionary<string, List<ConfigFileEntryBlock>>(StringComparer.Ordinal);
+		HashSet<string> emittedSections = new HashSet<string>(StringComparer.Ordinal);
+		string currentSectionName = string.Empty;
+		bool insideSection = false;
+		foreach (string rawLine in lines)
+		{
+			string line = rawLine ?? string.Empty;
+			if (TryGetConfigSectionHeaderName(line, out string sectionName))
+			{
+				FlushConfigFileUnknownBlock(pendingBlockLines, currentSectionName, unknownBlocksBySection);
+				currentSectionName = sectionName;
+				insideSection = true;
+				continue;
+			}
+			if (!insideSection)
+			{
+				preambleLines.Add(line);
+				continue;
+			}
+			pendingBlockLines.Add(line);
+			if (!TryGetConfigKeyFromValueLine(line, out ConfigKey configKey))
+			{
+				continue;
+			}
+			ConfigFileEntryBlock block = new ConfigFileEntryBlock
+			{
+				Key = configKey,
+				HasKnownKey = true,
+				SectionName = currentSectionName,
+				Lines = new List<string>(pendingBlockLines)
+			};
+			if (!knownBlocks.ContainsKey(configKey) || IsPreferredConfigFileSection(currentSectionName, configKey, isChineseLanguage))
+			{
+				knownBlocks[configKey] = block;
+			}
+			pendingBlockLines.Clear();
+		}
+		FlushConfigFileUnknownBlock(pendingBlockLines, currentSectionName, unknownBlocksBySection);
+
+		List<string> orderedLines = new List<string>();
+		foreach (string line in preambleLines)
+		{
+			orderedLines.Add(line);
+		}
+		AppendConfigFileSection(orderedLines, basicSectionName, BasicConfigFileOrder, knownBlocks, unknownBlocksBySection, emittedSections);
+		AppendConfigFileSection(orderedLines, adjustmentSectionName, AdjustmentConfigFileOrder, knownBlocks, unknownBlocksBySection, emittedSections);
+		foreach (KeyValuePair<string, List<ConfigFileEntryBlock>> pair in unknownBlocksBySection)
+		{
+			if (emittedSections.Contains(pair.Key) || pair.Value == null || pair.Value.Count == 0)
+			{
+				continue;
+			}
+			AppendConfigFileSectionHeader(orderedLines, pair.Key);
+			foreach (ConfigFileEntryBlock block in pair.Value)
+			{
+				AppendConfigFileBlock(orderedLines, block.Lines);
+			}
+			emittedSections.Add(pair.Key);
+		}
+		return orderedLines.ToArray();
+	}
+
+	private static void FlushConfigFileUnknownBlock(List<string> pendingBlockLines, string currentSectionName, Dictionary<string, List<ConfigFileEntryBlock>> unknownBlocksBySection)
+	{
+		if (pendingBlockLines == null || pendingBlockLines.Count == 0 || string.IsNullOrWhiteSpace(currentSectionName))
+		{
+			pendingBlockLines?.Clear();
+			return;
+		}
+		if (pendingBlockLines.All(string.IsNullOrWhiteSpace))
+		{
+			pendingBlockLines.Clear();
+			return;
+		}
+		if (!unknownBlocksBySection.TryGetValue(currentSectionName, out List<ConfigFileEntryBlock> blocks))
+		{
+			blocks = new List<ConfigFileEntryBlock>();
+			unknownBlocksBySection[currentSectionName] = blocks;
+		}
+		blocks.Add(new ConfigFileEntryBlock
+		{
+			SectionName = currentSectionName,
+			Lines = new List<string>(pendingBlockLines)
+		});
+		pendingBlockLines.Clear();
+	}
+
+	private static void AppendConfigFileSection(List<string> output, string sectionName, ConfigKey[] orderedKeys, Dictionary<ConfigKey, ConfigFileEntryBlock> knownBlocks, Dictionary<string, List<ConfigFileEntryBlock>> unknownBlocksBySection, HashSet<string> emittedSections)
+	{
+		bool hasKnownBlocks = orderedKeys != null && orderedKeys.Any(key => knownBlocks.ContainsKey(key));
+		bool hasUnknownBlocks = unknownBlocksBySection.TryGetValue(sectionName, out List<ConfigFileEntryBlock> unknownBlocks) && unknownBlocks != null && unknownBlocks.Count > 0;
+		if (!hasKnownBlocks && !hasUnknownBlocks)
+		{
+			return;
+		}
+		AppendConfigFileSectionHeader(output, sectionName);
+		if (orderedKeys != null)
+		{
+			foreach (ConfigKey key in orderedKeys)
+			{
+				if (knownBlocks.TryGetValue(key, out ConfigFileEntryBlock block))
+				{
+					AppendConfigFileBlock(output, block.Lines);
+				}
+			}
+		}
+		if (hasUnknownBlocks)
+		{
+			foreach (ConfigFileEntryBlock block in unknownBlocks)
+			{
+				AppendConfigFileBlock(output, block.Lines);
+			}
+		}
+		emittedSections.Add(sectionName);
+	}
+
+	private static void AppendConfigFileSectionHeader(List<string> output, string sectionName)
+	{
+		if (output == null || string.IsNullOrWhiteSpace(sectionName))
+		{
+			return;
+		}
+		TrimTrailingBlankLines(output);
+		if (output.Count > 0)
+		{
+			output.Add(string.Empty);
+		}
+		output.Add($"[{sectionName}]");
+	}
+
+	private static void AppendConfigFileBlock(List<string> output, List<string> lines)
+	{
+		if (output == null || lines == null || lines.Count == 0)
+		{
+			return;
+		}
+		if (output.Count > 0 && !string.IsNullOrWhiteSpace(output[output.Count - 1]))
+		{
+			output.Add(string.Empty);
+		}
+		int startIndex = 0;
+		while (startIndex < lines.Count && string.IsNullOrWhiteSpace(lines[startIndex]))
+		{
+			startIndex++;
+		}
+		for (int i = startIndex; i < lines.Count; i++)
+		{
+			output.Add(lines[i] ?? string.Empty);
+		}
+	}
+
+	private static void TrimTrailingBlankLines(List<string> lines)
+	{
+		if (lines == null)
+		{
+			return;
+		}
+		while (lines.Count > 0 && string.IsNullOrWhiteSpace(lines[lines.Count - 1]))
+		{
+			lines.RemoveAt(lines.Count - 1);
+		}
+	}
+
+	private static bool IsPreferredConfigFileSection(string sectionName, ConfigKey configKey, bool isChineseLanguage)
+	{
+		return string.Equals(sectionName, GetSectionName(configKey, isChineseLanguage), StringComparison.Ordinal);
+	}
+
+	private static bool TryGetConfigSectionHeaderName(string line, out string sectionName)
+	{
+		sectionName = string.Empty;
+		if (string.IsNullOrWhiteSpace(line))
+		{
+			return false;
+		}
+		string trimmed = line.Trim();
+		if (!trimmed.StartsWith("[", StringComparison.Ordinal) || !trimmed.EndsWith("]", StringComparison.Ordinal))
+		{
+			return false;
+		}
+		sectionName = trimmed.Substring(1, trimmed.Length - 2).Trim();
+		return !string.IsNullOrWhiteSpace(sectionName);
+	}
+
+	private static bool TryGetConfigKeyFromValueLine(string line, out ConfigKey configKey)
+	{
+		configKey = default;
+		if (string.IsNullOrWhiteSpace(line))
+		{
+			return false;
+		}
+		string trimmed = line.TrimStart();
+		if (trimmed.StartsWith("#", StringComparison.Ordinal) || trimmed.StartsWith(";", StringComparison.Ordinal) || trimmed.StartsWith("[", StringComparison.Ordinal))
+		{
+			return false;
+		}
+		int equalsIndex = line.IndexOf('=');
+		if (equalsIndex <= 0)
+		{
+			return false;
+		}
+		int keyStart = 0;
+		while (keyStart < equalsIndex && char.IsWhiteSpace(line[keyStart]))
+		{
+			keyStart++;
+		}
+		int keyEnd = equalsIndex - 1;
+		while (keyEnd >= keyStart && char.IsWhiteSpace(line[keyEnd]))
+		{
+			keyEnd--;
+		}
+		if (keyEnd < keyStart)
+		{
+			return false;
+		}
+		string keyName = line.Substring(keyStart, keyEnd - keyStart + 1);
+		return TryGetConfigKey(keyName, out configKey);
 	}
 
 	private static string RewriteConfigFileLine(string line, bool isChineseLanguage)
@@ -4067,12 +4675,12 @@ public sealed class Plugin : BaseUnityPlugin
 	{
 		if (MatchesAdjustmentSectionName(sectionName))
 		{
-			localizedSectionName = GetSectionName(ConfigKey.FogUiX, isChineseLanguage);
+			localizedSectionName = GetAdjustmentSectionName(isChineseLanguage);
 			return true;
 		}
 		if (MatchesBasicSectionName(sectionName))
 		{
-			localizedSectionName = GetSectionName(ConfigKey.ModEnabled, isChineseLanguage);
+			localizedSectionName = GetBasicSectionName(isChineseLanguage);
 			return true;
 		}
 		localizedSectionName = string.Empty;
@@ -4082,7 +4690,7 @@ public sealed class Plugin : BaseUnityPlugin
 	private static bool MatchesBasicSectionName(string sectionName)
 	{
 		return string.Equals(sectionName, CanonicalBasicConfigSectionName, StringComparison.OrdinalIgnoreCase)
-			|| string.Equals(sectionName, GetSectionName(ConfigKey.ModEnabled, isChineseLanguage: true), StringComparison.Ordinal)
+			|| string.Equals(sectionName, GetBasicSectionName(isChineseLanguage: true), StringComparison.Ordinal)
 			|| string.Equals(sectionName, GetLegacyConfigSectionName(), StringComparison.OrdinalIgnoreCase)
 			|| string.Equals(sectionName, GetLegacySectionName(isChineseLanguage: true), StringComparison.Ordinal);
 	}
@@ -4090,7 +4698,7 @@ public sealed class Plugin : BaseUnityPlugin
 	private static bool MatchesAdjustmentSectionName(string sectionName)
 	{
 		return string.Equals(sectionName, CanonicalAdjustmentConfigSectionName, StringComparison.OrdinalIgnoreCase)
-			|| string.Equals(sectionName, GetSectionName(ConfigKey.FogUiX, isChineseLanguage: true), StringComparison.Ordinal);
+			|| string.Equals(sectionName, GetAdjustmentSectionName(isChineseLanguage: true), StringComparison.Ordinal);
 	}
 
 	private void TryLocalizeVisibleModConfigUi()
@@ -4201,7 +4809,7 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			if (string.Equals(sectionName, GetLegacyConfigSectionName(), StringComparison.Ordinal) || string.Equals(sectionName, GetLegacySectionName(isChineseLanguage: true), StringComparison.Ordinal))
 			{
-				AddUiLocalizationPair(map, sectionName, GetSectionName(ConfigKey.ModEnabled, isChineseLanguage));
+				AddUiLocalizationPair(map, sectionName, GetBasicSectionName(isChineseLanguage));
 				continue;
 			}
 
@@ -4215,6 +4823,10 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			AddUiLocalizationPair(map, GetConfigKeyName(configKey), GetKeyName(configKey, isChineseLanguage));
 			AddUiLocalizationPair(map, GetKeyName(configKey, isChineseLanguage: true), GetKeyName(configKey, isChineseLanguage));
+			foreach (string legacyKey in GetLegacyKeyNames(configKey))
+			{
+				AddUiLocalizationPair(map, legacyKey, GetKeyName(configKey, isChineseLanguage));
+			}
 			AddUiLocalizationPair(map, GetLocalizedDescription(configKey, isChineseLanguage: false), GetLocalizedDescription(configKey, isChineseLanguage));
 			AddUiLocalizationPair(map, GetLocalizedDescription(configKey, isChineseLanguage: true), GetLocalizedDescription(configKey, isChineseLanguage));
 		}
@@ -4943,7 +5555,7 @@ public sealed class Plugin : BaseUnityPlugin
 		string speedBadge = BuildFogUiBadge("SPD", FogUiSpeedLabelColor, Colorize(compactSpeed.ToString("0.##"), FogUiSpeedValueColor));
 		if (isLobbyScene)
 		{
-			SetFogUiText(BuildFogUiLine(stateBadge, speedBadge, GetCompactFogHandlingBadge(), GetCompactNightBadge()));
+			SetFogUiText(BuildFogUiLine(stateBadge, speedBadge, GetCompactLobbyFogDelayBadge(isChineseLanguage), GetCompactFogHandlingBadge(), GetCompactNightBadge()));
 			return;
 		}
 		string timingBadge = GetCompactTimingBadge();
@@ -5017,6 +5629,10 @@ public sealed class Plugin : BaseUnityPlugin
 			_fogUiDisplayEntries.Add(new FogUiDisplayEntry(FogUiIconKind.State, ParseColorOrDefault(FogUiStateLabelColor), GetGuestFogStateUiEntryText(isChineseLanguage)));
 			TryAppendFogDistanceEntry(_fogUiDisplayEntries, isChineseLanguage);
 			TryAppendFogEtaEntry(_fogUiDisplayEntries, isChineseLanguage);
+			if (!isLobbyScene)
+			{
+				TryAppendDayNightTimeEntry(_fogUiDisplayEntries, isChineseLanguage);
+			}
 			ApplyFogUiEntries();
 			return;
 		}
@@ -5024,6 +5640,7 @@ public sealed class Plugin : BaseUnityPlugin
 		_fogUiDisplayEntries.Add(new FogUiDisplayEntry(FogUiIconKind.Speed, ParseColorOrDefault(FogUiSpeedLabelColor), GetFogSpeedUiEntryText(isChineseLanguage)));
 		if (isLobbyScene)
 		{
+			_fogUiDisplayEntries.Add(new FogUiDisplayEntry(FogUiIconKind.Delay, ParseColorOrDefault(FogUiWaitLabelColor), GetLobbyFogDelayUiEntryText(isChineseLanguage)));
 			_fogUiDisplayEntries.Add(new FogUiDisplayEntry(FogUiIconKind.FogHandling, ParseColorOrDefault(FogUiHintLabelColor), GetFogHandlingUiEntryText(isChineseLanguage)));
 			_fogUiDisplayEntries.Add(new FogUiDisplayEntry(FogUiIconKind.Night, ParseColorOrDefault(FogUiHintLabelColor), GetNightColdUiEntryText(isChineseLanguage)));
 			ApplyFogUiEntries();
@@ -5032,12 +5649,14 @@ public sealed class Plugin : BaseUnityPlugin
 		if (TryAppendFogTimingEntry(_fogUiDisplayEntries, isChineseLanguage))
 		{
 			TryAppendDirectStartEntry(_fogUiDisplayEntries, isChineseLanguage);
+			TryAppendDayNightTimeEntry(_fogUiDisplayEntries, isChineseLanguage);
 			ApplyFogUiEntries();
 			return;
 		}
 		TryAppendFogDistanceEntry(_fogUiDisplayEntries, isChineseLanguage);
 		TryAppendFogEtaEntry(_fogUiDisplayEntries, isChineseLanguage);
 		TryAppendDirectStartEntry(_fogUiDisplayEntries, isChineseLanguage);
+		TryAppendDayNightTimeEntry(_fogUiDisplayEntries, isChineseLanguage);
 		ApplyFogUiEntries();
 	}
 
@@ -5065,6 +5684,16 @@ public sealed class Plugin : BaseUnityPlugin
 		string delayLabelColor = LerpHexColor(FogUiDelayCountdownStartLabelColor, FogUiDelayCountdownEndLabelColor, danger);
 		targetEntries.Add(new FogUiDisplayEntry(FogUiIconKind.Delay, ParseColorOrDefault(delayLabelColor), GetFogTimingUiEntryText(isChineseLanguage)));
 		return true;
+	}
+
+	private void TryAppendDayNightTimeEntry(List<FogUiDisplayEntry> targetEntries, bool isChineseLanguage)
+	{
+		if (!TryGetDayNightProgress(out bool isDay, out float phaseProgress))
+		{
+			return;
+		}
+		string iconColor = isDay ? FogUiDayTimeColor : FogUiNightTimeColor;
+		targetEntries.Add(new FogUiDisplayEntry(isDay ? FogUiIconKind.DayTime : FogUiIconKind.NightTime, ParseColorOrDefault(iconColor), GetDayNightTimeUiEntryText(isChineseLanguage, isDay, phaseProgress)));
 	}
 
 	private void TryAppendFogDistanceEntry(List<FogUiDisplayEntry> targetEntries, bool isChineseLanguage)
@@ -5160,6 +5789,51 @@ public sealed class Plugin : BaseUnityPlugin
 				view.LastText = entry.Text;
 				view.Text.text = entry.Text;
 			}
+			ApplyFogUiEntryProgressBar(view, entry);
+		}
+	}
+
+	private static void ApplyFogUiEntryProgressBar(FogUiEntryView view, FogUiDisplayEntry entry)
+	{
+		if (view == null)
+		{
+			return;
+		}
+		if (view.Text != null && view.Text.gameObject.activeSelf == entry.HasProgressBar)
+		{
+			view.Text.gameObject.SetActive(!entry.HasProgressBar);
+		}
+		if (view.BarRoot != null && view.BarRoot.gameObject.activeSelf != entry.HasProgressBar)
+		{
+			view.BarRoot.gameObject.SetActive(entry.HasProgressBar);
+		}
+		if (!entry.HasProgressBar)
+		{
+			view.LastProgress = -1f;
+			return;
+		}
+		if (view.BarBackground != null && view.LastBarBackgroundColor != entry.BarBackgroundColor)
+		{
+			view.BarBackground.color = entry.BarBackgroundColor;
+			view.LastBarBackgroundColor = entry.BarBackgroundColor;
+		}
+		if (view.BarFill != null)
+		{
+			if (Mathf.Abs(view.LastProgress - entry.Progress) > 0.001f)
+			{
+				view.BarFill.fillAmount = entry.Progress;
+				view.LastProgress = entry.Progress;
+			}
+			if (view.LastBarFillColor != entry.BarFillColor)
+			{
+				view.BarFill.color = entry.BarFillColor;
+				view.LastBarFillColor = entry.BarFillColor;
+			}
+		}
+		if (view.BarText != null && !string.Equals(view.LastBarText, entry.BarText, StringComparison.Ordinal))
+		{
+			view.LastBarText = entry.BarText;
+			view.BarText.text = entry.BarText;
 		}
 	}
 
@@ -5304,6 +5978,11 @@ public sealed class Plugin : BaseUnityPlugin
 			return BuildFogUiBadge("NGT", FogUiHintLabelColor, Colorize("ON", FogUiNightEnabledColor));
 		}
 		return BuildFogUiBadge("NGT", FogUiHintLabelColor, Colorize("OFF", FogUiNightDisabledColor));
+	}
+
+	private string GetCompactLobbyFogDelayBadge(bool isChineseLanguage)
+	{
+		return BuildFogUiBadge("DLY", FogUiWaitLabelColor, GetLobbyFogDelayUiEntryText(isChineseLanguage));
 	}
 
 	private string GetGuestFogRuntimeStateLabel(bool isChineseLanguage)
@@ -5542,6 +6221,18 @@ public sealed class Plugin : BaseUnityPlugin
 	private string GetLobbyPauseUiEntryText(bool isChineseLanguage)
 	{
 		return Colorize(GetFogPauseHotkeyLabel(), FogUiHintValueColor);
+	}
+
+	private string GetLobbyFogDelayUiEntryText(bool isChineseLanguage)
+	{
+		float configuredDelay = Mathf.Max(FogDelay?.Value ?? DefaultFogDelaySeconds, 0f);
+		return Colorize($"{configuredDelay:F1}s", FogUiWaitValueColor);
+	}
+
+	private static string GetDayNightTimeUiEntryText(bool isChineseLanguage, bool isDay, float phaseProgress)
+	{
+		string color = isDay ? FogUiDayTimeColor : FogUiNightTimeColor;
+		return Colorize($"{Mathf.RoundToInt(Mathf.Clamp01(phaseProgress) * 100f)}%", color);
 	}
 
 	private string GetFogHandlingUiEntryText(bool isChineseLanguage)
@@ -5960,11 +6651,57 @@ public sealed class Plugin : BaseUnityPlugin
 		textComponent.enableAutoSizing = false;
 		textComponent.text = string.Empty;
 
+		GameObject barObject = new GameObject("ProgressBar", typeof(RectTransform), typeof(Image), typeof(LayoutElement));
+		RectTransform barRect = barObject.GetComponent<RectTransform>();
+		barRect.SetParent(entryRect, false);
+		barRect.sizeDelta = new Vector2(FogUiTimeProgressBarWidth, FogUiTimeProgressBarHeight);
+		LayoutElement barLayout = barObject.GetComponent<LayoutElement>();
+		barLayout.minWidth = FogUiTimeProgressBarWidth;
+		barLayout.preferredWidth = FogUiTimeProgressBarWidth;
+		barLayout.minHeight = FogUiTimeProgressBarHeight;
+		barLayout.preferredHeight = FogUiTimeProgressBarHeight;
+		Image barBackground = barObject.GetComponent<Image>();
+		barBackground.raycastTarget = false;
+
+		GameObject fillObject = new GameObject("Fill", typeof(RectTransform), typeof(Image));
+		RectTransform fillRect = fillObject.GetComponent<RectTransform>();
+		fillRect.SetParent(barRect, false);
+		fillRect.anchorMin = Vector2.zero;
+		fillRect.anchorMax = Vector2.one;
+		fillRect.offsetMin = Vector2.zero;
+		fillRect.offsetMax = Vector2.zero;
+		Image fillImage = fillObject.GetComponent<Image>();
+		fillImage.raycastTarget = false;
+		fillImage.type = Image.Type.Filled;
+		fillImage.fillMethod = Image.FillMethod.Horizontal;
+		fillImage.fillOrigin = (int)Image.OriginHorizontal.Left;
+		fillImage.fillAmount = 0f;
+
+		GameObject barTextObject = new GameObject("Label", typeof(RectTransform));
+		RectTransform barTextRect = barTextObject.GetComponent<RectTransform>();
+		barTextRect.SetParent(barRect, false);
+		barTextRect.anchorMin = Vector2.zero;
+		barTextRect.anchorMax = Vector2.one;
+		barTextRect.offsetMin = new Vector2(4f, 0f);
+		barTextRect.offsetMax = new Vector2(-4f, 0f);
+		TextMeshProUGUI barTextComponent = barTextObject.AddComponent<TextMeshProUGUI>();
+		ApplyGameTextStyle(barTextComponent, Color.white, FogUiEntryTextSizeMultiplier);
+		barTextComponent.richText = true;
+		barTextComponent.alignment = TextAlignmentOptions.Center;
+		barTextComponent.overflowMode = TextOverflowModes.Overflow;
+		barTextComponent.enableAutoSizing = false;
+		barTextComponent.text = string.Empty;
+		barObject.SetActive(false);
+
 		return new FogUiEntryView
 		{
 			Root = entryRect,
 			Icon = iconImage,
-			Text = textComponent
+			Text = textComponent,
+			BarRoot = barRect,
+			BarBackground = barBackground,
+			BarFill = fillImage,
+			BarText = barTextComponent
 		};
 	}
 
@@ -5980,6 +6717,13 @@ public sealed class Plugin : BaseUnityPlugin
 			entryView.Text.richText = true;
 			entryView.Text.alignment = TextAlignmentOptions.MidlineLeft;
 			entryView.Text.overflowMode = TextOverflowModes.Overflow;
+			if (entryView.BarText != null)
+			{
+				ApplyGameTextStyle(entryView.BarText, Color.white, FogUiEntryTextSizeMultiplier);
+				entryView.BarText.richText = true;
+				entryView.BarText.alignment = TextAlignmentOptions.Center;
+				entryView.BarText.overflowMode = TextOverflowModes.Overflow;
+			}
 		}
 	}
 
@@ -6082,6 +6826,23 @@ public sealed class Plugin : BaseUnityPlugin
 		case FogUiIconKind.Night:
 			FillCircle(pixels, size, 12f, 12f, 8f, new Color32(255, 255, 255, 255));
 			FillCircle(pixels, size, 15f, 10f, 8f, new Color32(255, 255, 255, 0));
+			break;
+		case FogUiIconKind.DayTime:
+			FillCircle(pixels, size, 12f, 12f, 5f, new Color32(255, 255, 255, 255));
+			DrawLine(pixels, size, 12f, 2f, 12f, 5f, 1.8f);
+			DrawLine(pixels, size, 12f, 19f, 12f, 22f, 1.8f);
+			DrawLine(pixels, size, 2f, 12f, 5f, 12f, 1.8f);
+			DrawLine(pixels, size, 19f, 12f, 22f, 12f, 1.8f);
+			DrawLine(pixels, size, 5f, 5f, 7f, 7f, 1.6f);
+			DrawLine(pixels, size, 17f, 17f, 19f, 19f, 1.6f);
+			DrawLine(pixels, size, 19f, 5f, 17f, 7f, 1.6f);
+			DrawLine(pixels, size, 7f, 17f, 5f, 19f, 1.6f);
+			break;
+		case FogUiIconKind.NightTime:
+			FillCircle(pixels, size, 11f, 12f, 7.5f, new Color32(255, 255, 255, 255));
+			FillCircle(pixels, size, 15f, 10f, 7.5f, new Color32(255, 255, 255, 0));
+			FillCircle(pixels, size, 18f, 6f, 1.2f, new Color32(255, 255, 255, 255));
+			FillCircle(pixels, size, 19f, 17f, 1f, new Color32(255, 255, 255, 255));
 			break;
 		}
 		texture.SetPixels32(pixels);
@@ -6268,7 +7029,7 @@ public sealed class Plugin : BaseUnityPlugin
 		_remotePlayerCompassBaselineCounts.Clear();
 		_pendingCampfireCompassGrantTimes.Clear();
 		_fogPaused = false;
-		_localFogStatusSuppressionDepth = 0;
+		_localFogStatusSourceDepth = 0;
 		ResetHiddenNightTestHotkeyState();
 		ResetFogArrivalEstimate();
 		ResetFogStateSyncSnapshot();
@@ -6353,9 +7114,19 @@ public sealed class Plugin : BaseUnityPlugin
 	{
 		if (IsAdjustmentConfigKey(configKey))
 		{
-			return isChineseLanguage ? "\u8C03\u6574" : CanonicalAdjustmentConfigSectionName;
+			return GetAdjustmentSectionName(isChineseLanguage);
 		}
-		return isChineseLanguage ? "\u57FA\u672C" : CanonicalBasicConfigSectionName;
+		return GetBasicSectionName(isChineseLanguage);
+	}
+
+	private static string GetBasicSectionName(bool isChineseLanguage)
+	{
+		return isChineseLanguage ? ChineseBasicConfigSectionName : CanonicalBasicConfigSectionName;
+	}
+
+	private static string GetAdjustmentSectionName(bool isChineseLanguage)
+	{
+		return isChineseLanguage ? ChineseAdjustmentConfigSectionName : CanonicalAdjustmentConfigSectionName;
 	}
 
 	private static string GetLegacyConfigSectionName()
@@ -6370,7 +7141,14 @@ public sealed class Plugin : BaseUnityPlugin
 
 	private static bool IsAdjustmentConfigKey(ConfigKey configKey)
 	{
-		return configKey == ConfigKey.FogUiX || configKey == ConfigKey.FogUiY || configKey == ConfigKey.FogUiScale;
+		return configKey == ConfigKey.ModEnabled
+			|| configKey == ConfigKey.FogUiEnabled
+			|| configKey == ConfigKey.CampfireLocatorUiEnabled
+			|| configKey == ConfigKey.CompassEnabled
+			|| configKey == ConfigKey.CompassHotkey
+			|| configKey == ConfigKey.FogUiX
+			|| configKey == ConfigKey.FogUiY
+			|| configKey == ConfigKey.FogUiScale;
 	}
 
 	private static string GetLocalizedModDisplayName(bool isChineseLanguage)
@@ -6388,7 +7166,7 @@ public sealed class Plugin : BaseUnityPlugin
 		return configKey switch
 		{
 			ConfigKey.ModEnabled => isChineseLanguage ? "\u6A21\u5757\u5F00\u5173" : "Enable Mod",
-			ConfigKey.FogColdSuppression => isChineseLanguage ? "\u6BD2\u96FE\u5BD2\u51B7" : "Suppress Fog Cold",
+			ConfigKey.FogColdSuppression => isChineseLanguage ? "\u6BD2\u96FE\u5BD2\u51B7\u963B\u6B62" : "Suppress Fog Cold",
 			ConfigKey.NightColdEnabled => isChineseLanguage ? "\u591C\u665A\u5BD2\u51B7" : "Night Cold",
 			ConfigKey.FogSpeed => isChineseLanguage ? "\u6BD2\u96FE\u79FB\u52A8\u901F\u5EA6" : "Fog Speed",
 			ConfigKey.FogDelay => isChineseLanguage ? "\u6BD2\u96FE\u5EF6\u8FDF\u65F6\u95F4s" : "Fog Delay (s)",
@@ -6396,7 +7174,7 @@ public sealed class Plugin : BaseUnityPlugin
 			ConfigKey.CompassHotkey => isChineseLanguage ? "\u6307\u5357\u9488\u751F\u6210\u6309\u952E" : "Compass Hotkey",
 			ConfigKey.FogPauseHotkey => isChineseLanguage ? "\u6BD2\u96FE\u6682\u505C\u6309\u952E" : "Pause Fog Hotkey",
 			ConfigKey.FogUiEnabled => isChineseLanguage ? "UI\u542F\u7528" : "Fog UI",
-			ConfigKey.CampfireLocatorUiEnabled => isChineseLanguage ? "\u7BED\u706B\u4F4D\u7F6E HUD" : "Campfire Locator HUD",
+			ConfigKey.CampfireLocatorUiEnabled => isChineseLanguage ? "\u7BDD\u706B\u4F4D\u7F6E HUD" : "Campfire Locator HUD",
 			ConfigKey.FogUiX => isChineseLanguage ? "UI X\u4F4D\u7F6E" : "UI X Position",
 			ConfigKey.FogUiY => isChineseLanguage ? "UI Y\u4F4D\u7F6E" : "UI Y Position",
 			ConfigKey.FogUiScale => isChineseLanguage ? "UI\u7F29\u653E" : "UI Scale",
@@ -6417,7 +7195,7 @@ public sealed class Plugin : BaseUnityPlugin
 			ConfigKey.CompassHotkey => isChineseLanguage ? "\u6309\u4E0B\u540E\u5728\u73A9\u5BB6\u6B63\u524D\u65B9\u751F\u6210\u4E00\u4E2A\u666E\u901A\u6307\u5357\u9488\u3002\u8BBE\u4E3A None \u53EF\u7981\u7528\u8BE5\u6309\u952E\u3002" : "Spawns a normal compass in front of the player. Set this to None to disable the hotkey.",
 			ConfigKey.FogPauseHotkey => isChineseLanguage ? "\u4E3B\u673A\u4E13\u7528\u6309\u952E\uFF0C\u7528\u4E8E\u6682\u505C\u6216\u7EE7\u7EED\u6BD2\u96FE\u63A8\u8FDB\u3002\u8BBE\u4E3A None \u53EF\u7981\u7528\u3002\u9ED8\u8BA4 Y\u3002" : "Host-only hotkey used to pause or resume fog movement. Set this to None to disable it. Default: Y.",
 			ConfigKey.FogUiEnabled => isChineseLanguage ? "\u63A7\u5236\u662F\u5426\u663E\u793A\u6BD2\u96FE\u76F8\u5173 HUD\u3002" : "Shows or hides the Fog&ColdControl HUD.",
-			ConfigKey.CampfireLocatorUiEnabled => isChineseLanguage ? "\u63A7\u5236\u662F\u5426\u663E\u793A\u5C4F\u5E55\u9876\u90E8\u7684\u7BED\u706B\u4F4D\u7F6E HUD\u3002\u9ED8\u8BA4\u5F00\u542F\u3002" : "Shows or hides the top-screen campfire locator HUD. Default: On.",
+			ConfigKey.CampfireLocatorUiEnabled => isChineseLanguage ? "\u63A7\u5236\u662F\u5426\u663E\u793A\u5C4F\u5E55\u9876\u90E8\u7684\u7BDD\u706B\u4F4D\u7F6E HUD\u3002\u9ED8\u8BA4\u5F00\u542F\u3002" : "Shows or hides the top-screen campfire locator HUD. Default: On.",
 			ConfigKey.FogUiX => isChineseLanguage ? "\u8C03\u6574\u6BD2\u96FE HUD \u7684\u6C34\u5E73\u4F4D\u7F6E\u3002\u9ED8\u8BA4 60\u3002" : "Adjusts the horizontal position of the Fog&ColdControl HUD. Default: 60.",
 			ConfigKey.FogUiY => isChineseLanguage ? "\u8C03\u6574\u6BD2\u96FE HUD \u7684\u5782\u76F4\u4F4D\u7F6E\u3002\u9ED8\u8BA4 0\u3002" : "Adjusts the vertical position of the Fog&ColdControl HUD. Default: 0.",
 			ConfigKey.FogUiScale => isChineseLanguage ? "\u8C03\u6574\u6BD2\u96FE HUD \u7684\u6574\u4F53\u7F29\u653E\u3002\u9ED8\u8BA4 0.9\u3002" : "Adjusts the overall scale of the Fog&ColdControl HUD. Default: 0.9.",
@@ -6457,9 +7235,14 @@ public sealed class Plugin : BaseUnityPlugin
 		return NightColdEnabled == null || NightColdEnabled.Value;
 	}
 
+	internal static bool ShouldDisableNightColdFeatureLocally()
+	{
+		return HasFogAuthority() && IsModFeatureEnabled() && !IsNightColdFeatureEnabled();
+	}
+
 	internal static bool ShouldSuppressFogColdLocally()
 	{
-		return IsModFeatureEnabled() && IsFogColdSuppressionEnabled();
+		return HasFogAuthority() && IsModFeatureEnabled() && IsFogColdSuppressionEnabled();
 	}
 
 	internal static bool ShouldPreserveVanillaLateGameNoCold()
@@ -6472,6 +7255,13 @@ public sealed class Plugin : BaseUnityPlugin
 		return HasFogAuthority() && IsModFeatureEnabled() && (IsFogColdSuppressionEnabled() || ShouldPreserveVanillaLateGameNoCold());
 	}
 
+	internal static bool ShouldSuppressHostManagedStatusDamage()
+	{
+		return HasFogAuthority()
+			&& IsModFeatureEnabled()
+			&& (ShouldSuppressFogColdDamage() || (Instance != null && Instance.ShouldDisableNightColdInCurrentStage()));
+	}
+
 	internal static bool ShouldForceFogCoverageEverywhere()
 	{
 		return HasFogAuthority() && IsModFeatureEnabled() && !ShouldDeferFogToVanillaInCurrentScene();
@@ -6482,19 +7272,19 @@ public sealed class Plugin : BaseUnityPlugin
 		Instance?.EnsureFogCoverage(fogHandler);
 	}
 
-	internal static void BeginLocalFogStatusSuppression()
+	internal static void BeginLocalFogStatusSource()
 	{
-		if (ShouldSuppressFogColdLocally())
+		if (IsModFeatureEnabled())
 		{
-			_localFogStatusSuppressionDepth++;
+			_localFogStatusSourceDepth++;
 		}
 	}
 
-	internal static void EndLocalFogStatusSuppression()
+	internal static void EndLocalFogStatusSource()
 	{
-		if (_localFogStatusSuppressionDepth > 0)
+		if (_localFogStatusSourceDepth > 0)
 		{
-			_localFogStatusSuppressionDepth--;
+			_localFogStatusSourceDepth--;
 		}
 	}
 
@@ -6515,9 +7305,9 @@ public sealed class Plugin : BaseUnityPlugin
 		{
 			return false;
 		}
-		if (_localFogStatusSuppressionDepth > 0 && ShouldSuppressFogColdLocally())
+		if (_localFogStatusSourceDepth > 0)
 		{
-			return true;
+			return ShouldSuppressFogColdDamage();
 		}
 		if (isColdLikeStatus && Instance != null && Instance.ShouldDisableNightColdInCurrentStage())
 		{
@@ -6554,6 +7344,66 @@ public sealed class Plugin : BaseUnityPlugin
 		}
 	}
 
+	internal static bool TryApplyHostManagedIncomingStatusSuppression(CharacterAfflictions afflictions, float[] deltas, PhotonMessageInfo info)
+	{
+		if (Instance == null || afflictions == null || deltas == null || deltas.Length == 0 || !PhotonNetwork.InRoom || PhotonNetwork.IsMasterClient || !IsModFeatureEnabled())
+		{
+			return false;
+		}
+		if (info.Sender == null || !info.Sender.IsMasterClient || !TryReadInstallState(info.Sender, out bool hostModEnabled) || !hostModEnabled)
+		{
+			return false;
+		}
+		Character character = afflictions.character;
+		if (character == null || character != Character.localCharacter || character.data == null || character.data.dead || character.isBot || character.isZombie)
+		{
+			return false;
+		}
+		bool hasManagedReduction = false;
+		for (int i = 0; i < deltas.Length; i++)
+		{
+			float delta = deltas[i];
+			if (Mathf.Abs(delta) <= 0.0001f)
+			{
+				continue;
+			}
+			if (delta > 0f || !IsHostManagedStatusReductionIndex(character, i))
+			{
+				return false;
+			}
+			hasManagedReduction = true;
+		}
+		if (!hasManagedReduction)
+		{
+			return false;
+		}
+		for (int i = 0; i < deltas.Length; i++)
+		{
+			float delta = deltas[i];
+			if (delta >= -0.0001f)
+			{
+				continue;
+			}
+			CharacterAfflictions.STATUSTYPE statusType = (CharacterAfflictions.STATUSTYPE)i;
+			float currentStatus = afflictions.GetCurrentStatus(statusType);
+			SetStatusWithoutChunkRemoval(afflictions, statusType, Mathf.Max(currentStatus + delta, 0f));
+		}
+		return true;
+	}
+
+	private static bool IsHostManagedStatusReductionIndex(Character character, int statusIndex)
+	{
+		if (statusIndex == (int)CharacterAfflictions.STATUSTYPE.Spores)
+		{
+			return true;
+		}
+		if (statusIndex == (int)CharacterAfflictions.STATUSTYPE.Cold)
+		{
+			return true;
+		}
+		return character != null && character.data != null && character.data.isSkeleton && statusIndex == (int)CharacterAfflictions.STATUSTYPE.Injury;
+	}
+
 	internal static bool ShouldBlockVanillaOrbFogWait(OrbFogHandler fogHandler)
 	{
 		if (!IsModFeatureEnabled() || Instance == null || fogHandler == null || !HasFogAuthority())
@@ -6584,7 +7434,7 @@ public sealed class Plugin : BaseUnityPlugin
 			_hasAdvertisedInstallState = false;
 			return;
 		}
-		bool isEnabled = ShouldSuppressFogColdLocally();
+		bool isEnabled = IsModFeatureEnabled();
 		if (_hasAdvertisedInstallState && _lastAdvertisedInstallState == isEnabled && LocalInstallStateMatches(isEnabled))
 		{
 			return;
@@ -6616,11 +7466,6 @@ public sealed class Plugin : BaseUnityPlugin
 			return false;
 		}
 		return TryReadInstallState(localPlayer, out bool currentState) && currentState == expected;
-	}
-
-	private static bool HasRemoteFogSuppressionSupport(Photon.Realtime.Player player)
-	{
-		return TryReadInstallState(player, out bool isEnabled) && isEnabled;
 	}
 
 	private static bool TryReadInstallState(Photon.Realtime.Player player, out bool isEnabled)

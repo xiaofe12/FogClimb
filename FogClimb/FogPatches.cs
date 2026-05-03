@@ -8,7 +8,18 @@ internal static class FogMakePlayerColdPatch
 {
 	private static bool Prefix()
 	{
-		return !Plugin.ShouldSuppressFogColdLocally();
+		if (Plugin.ShouldSuppressFogColdDamage())
+		{
+			return false;
+		}
+		Plugin.BeginLocalFogStatusSource();
+		return true;
+	}
+
+	private static Exception Finalizer(Exception __exception)
+	{
+		Plugin.EndLocalFogStatusSource();
+		return __exception;
 	}
 }
 
@@ -17,12 +28,12 @@ internal static class FogSphereSetShaderVarsPatch
 {
 	private static void Prefix()
 	{
-		Plugin.BeginLocalFogStatusSuppression();
+		Plugin.BeginLocalFogStatusSource();
 	}
 
 	private static Exception Finalizer(Exception __exception)
 	{
-		Plugin.EndLocalFogStatusSuppression();
+		Plugin.EndLocalFogStatusSource();
 		return __exception;
 	}
 }
@@ -75,7 +86,26 @@ internal static class AscentsFogEnabledPatch
 	}
 }
 
-[HarmonyPatch(typeof(CharacterAfflictions), "AddStatus")]
+[HarmonyPatch(typeof(Ascents), "get_isNightCold")]
+internal static class AscentsNightColdPatch
+{
+	private static void Postfix(ref bool __result)
+	{
+		if (Plugin.ShouldDisableNightColdFeatureLocally())
+		{
+			__result = false;
+		}
+	}
+}
+
+[HarmonyPatch(typeof(CharacterAfflictions), "AddStatus", new Type[]
+{
+	typeof(CharacterAfflictions.STATUSTYPE),
+	typeof(float),
+	typeof(bool),
+	typeof(bool),
+	typeof(bool)
+})]
 internal static class CharacterAfflictionsAddStatusPatch
 {
 	private static bool Prefix(CharacterAfflictions __instance, CharacterAfflictions.STATUSTYPE statusType, ref bool __result)
@@ -86,6 +116,15 @@ internal static class CharacterAfflictionsAddStatusPatch
 		}
 		__result = false;
 		return false;
+	}
+}
+
+[HarmonyPatch(typeof(CharacterAfflictions), "RPC_ApplyStatusesFromFloatArray")]
+internal static class CharacterAfflictionsRpcApplyStatusesFromFloatArrayPatch
+{
+	private static bool Prefix(CharacterAfflictions __instance, float[] data, Photon.Pun.PhotonMessageInfo info)
+	{
+		return !Plugin.TryApplyHostManagedIncomingStatusSuppression(__instance, data, info);
 	}
 }
 

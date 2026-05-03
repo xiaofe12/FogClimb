@@ -1,6 +1,6 @@
 {
   "name": "Fog&ColdControl",
-  "version_number": "1.0.1",
+  "version_number": "1.0.3",
   "website_url": "https://github.com/Thanks/FogAndColdControl",
   "description": "A host-only PEAK rising-fog mod with synced multiplayer fog, separate fog-cold and night-cold control, optional compass support, and localized config files.",
   "dependencies": [
