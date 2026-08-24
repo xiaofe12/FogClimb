@@ -8,7 +8,18 @@ internal static class FogMakePlayerColdPatch
 {
 	private static bool Prefix()
 	{
-		return !Plugin.ShouldSuppressFogColdLocally();
+		if (Plugin.ShouldSuppressFogColdDamage())
+		{
+			return false;
+		}
+		Plugin.BeginLocalFogStatusSource();
+		return true;
+	}
+
+	private static Exception Finalizer(Exception __exception)
+	{
+		Plugin.EndLocalFogStatusSource();
+		return __exception;
 	}
 }
 
@@ -17,12 +28,12 @@ internal static class FogSphereSetShaderVarsPatch
 {
 	private static void Prefix()
 	{
-		Plugin.BeginLocalFogStatusSuppression();
+		Plugin.BeginLocalFogStatusSource();
 	}
 
 	private static Exception Finalizer(Exception __exception)
 	{
-		Plugin.EndLocalFogStatusSuppression();
+		Plugin.EndLocalFogStatusSource();
 		return __exception;
 	}
 }
@@ -75,6 +86,19 @@ internal static class AscentsFogEnabledPatch
 	}
 }
 
+[HarmonyPatch(typeof(Ascents), "get_isNightCold")]
+internal static class AscentsNightColdPatch
+{
+	private static void Postfix(ref bool __result)
+	{
+		if (Plugin.ShouldDisableNightColdFeatureLocally())
+		{
+			__result = false;
+		}
+	}
+}
+
+// 按名称解析唯一的 AddStatus 重载，避免游戏更新增减参数（如 2026-08 新增 ignoreInvincibility）导致补丁目标失效。
 [HarmonyPatch(typeof(CharacterAfflictions), "AddStatus")]
 internal static class CharacterAfflictionsAddStatusPatch
 {
@@ -86,6 +110,15 @@ internal static class CharacterAfflictionsAddStatusPatch
 		}
 		__result = false;
 		return false;
+	}
+}
+
+[HarmonyPatch(typeof(CharacterAfflictions), "RPC_ApplyStatusesFromFloatArray")]
+internal static class CharacterAfflictionsRpcApplyStatusesFromFloatArrayPatch
+{
+	private static bool Prefix(CharacterAfflictions __instance, float[] data, Photon.Pun.PhotonMessageInfo info)
+	{
+		return !Plugin.TryApplyHostManagedIncomingStatusSuppression(__instance, data, info);
 	}
 }
 

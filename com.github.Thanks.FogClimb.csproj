@@ -86,6 +86,10 @@
       <HintPath>libs\UnityEngine.UI.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>libs\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="UnityEngine.UIModule">
       <HintPath>libs\UnityEngine.UIModule.dll</HintPath>
       <Private>False</Private>
@@ -102,6 +106,13 @@
   <ItemGroup>
     <Compile Include="FogClimb\FogPatches.cs" />
     <Compile Include="FogClimb\Plugin.cs" />
+    <Compile Include="FogClimb\Plugin.Compass.cs" />
+    <Compile Include="FogClimb\Plugin.Config.cs" />
+    <Compile Include="FogClimb\Plugin.Core.cs" />
+    <Compile Include="FogClimb\Plugin.Fog.cs" />
+    <Compile Include="FogClimb\Plugin.Hud.cs" />
+    <Compile Include="FogClimb\Plugin.Status.cs" />
+    <Compile Include="FogClimb\Plugin.Sync.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
