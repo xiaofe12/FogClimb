@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
   <PropertyGroup>
@@ -37,82 +37,86 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="0Harmony">
-      <HintPath>libs\0Harmony.dll</HintPath>
+      <HintPath>$(PEAKRoot)\BepInEx\core\0Harmony.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Assembly-CSharp">
-      <HintPath>libs\Assembly-CSharp.dll</HintPath>
+      <HintPath>$(PEAKRoot)\PEAK_Data\Managed\Assembly-CSharp.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="BepInEx">
-      <HintPath>libs\BepInEx.dll</HintPath>
+      <HintPath>$(PEAKRoot)\BepInEx\core\BepInEx.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Photon3Unity3D">
-      <HintPath>libs\Photon3Unity3D.dll</HintPath>
+      <HintPath>$(PEAKRoot)\PEAK_Data\Managed\Photon3Unity3D.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="PhotonRealtime">
-      <HintPath>libs\PhotonRealtime.dll</HintPath>
+      <HintPath>$(PEAKRoot)\PEAK_Data\Managed\PhotonRealtime.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="PhotonUnityNetworking">
-      <HintPath>libs\PhotonUnityNetworking.dll</HintPath>
+      <HintPath>$(PEAKRoot)\PEAK_Data\Managed\PhotonUnityNetworking.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Sirenix.Serialization">
-      <HintPath>libs\Sirenix.Serialization.dll</HintPath>
+      <HintPath>$(PEAKRoot)\PEAK_Data\Managed\Sirenix.Serialization.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="UnityEngine">
-      <HintPath>libs\UnityEngine.dll</HintPath>
+      <HintPath>$(PEAKRoot)\PEAK_Data\Managed\UnityEngine.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.CoreModule">
-      <HintPath>libs\UnityEngine.CoreModule.dll</HintPath>
+      <HintPath>$(PEAKRoot)\PEAK_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.InputLegacyModule">
-      <HintPath>libs\UnityEngine.InputLegacyModule.dll</HintPath>
+      <HintPath>$(PEAKRoot)\PEAK_Data\Managed\UnityEngine.InputLegacyModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.PhysicsModule">
-      <HintPath>libs\UnityEngine.PhysicsModule.dll</HintPath>
+      <HintPath>$(PEAKRoot)\PEAK_Data\Managed\UnityEngine.PhysicsModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.UI">
-      <HintPath>libs\UnityEngine.UI.dll</HintPath>
+      <HintPath>$(PEAKRoot)\PEAK_Data\Managed\UnityEngine.UI.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.TextRenderingModule">
-      <HintPath>libs\UnityEngine.TextRenderingModule.dll</HintPath>
+      <HintPath>$(PEAKRoot)\PEAK_Data\Managed\UnityEngine.TextRenderingModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.UIModule">
-      <HintPath>libs\UnityEngine.UIModule.dll</HintPath>
+      <HintPath>$(PEAKRoot)\PEAK_Data\Managed\UnityEngine.UIModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Unity.TextMeshPro">
-      <HintPath>libs\Unity.TextMeshPro.dll</HintPath>
+      <HintPath>$(PEAKRoot)\PEAK_Data\Managed\Unity.TextMeshPro.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Zorro.Core.Runtime">
-      <HintPath>libs\Zorro.Core.Runtime.dll</HintPath>
+      <HintPath>$(PEAKRoot)\PEAK_Data\Managed\Zorro.Core.Runtime.dll</HintPath>
       <Private>False</Private>
     </Reference>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="FogClimb\FogPatches.cs" />
+    <Compile Include="FogClimb\NextBiomeResolver.cs" />
+    <Compile Include="FogClimb\FogSpeedSamples.cs" />
     <Compile Include="FogClimb\Plugin.cs" />
     <Compile Include="FogClimb\Plugin.Compass.cs" />
     <Compile Include="FogClimb\Plugin.Config.cs" />
     <Compile Include="FogClimb\Plugin.Core.cs" />
     <Compile Include="FogClimb\Plugin.Fog.cs" />
     <Compile Include="FogClimb\Plugin.Hud.cs" />
+    <Compile Include="FogClimb\Plugin.Kiln.cs" />
     <Compile Include="FogClimb\Plugin.Status.cs" />
     <Compile Include="FogClimb\Plugin.Sync.cs" />
+    <Compile Include="FogClimb\Plugin.GuestFog.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

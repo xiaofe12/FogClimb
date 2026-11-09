@@ -160,6 +160,8 @@ public sealed partial class Plugin
 		_legacyFog = null;
 		_compassItem = null;
 		_cachedStormVisuals = null;
+		_cachedKilnLava = null;
+		_lastKilnLavaScan = -999f;
 		_lastStormVisualScanTime = -999f;
 		ResetWeatherHazardUiState();
 		_pendingWeatherStateBroadcastTime = -1f;
@@ -838,110 +840,6 @@ public sealed partial class Plugin
 	}
 
 
-	private bool TryGetLavaApproach(out float distance, out float etaSeconds, out bool hasEta)
-	{
-		distance = 0f;
-		etaSeconds = 0f;
-		hasEta = false;
-		bool segmentOk = ShouldShowLavaApproachUiForCurrentSegment();
-		bool loading = LoadingScreenHandler.loading;
-		bool subjectOk = TryResolveFogUiSubjectPosition(out var subjectPosition);
-		if (!segmentOk || loading || !subjectOk)
-		{
-			LogLavaDiag($"skip: segmentOk={segmentOk} loading={loading} subjectOk={subjectOk}");
-			return false;
-		}
-		int hazardValue = -1;
-		try
-		{
-			if (!IsFortressSegmentCurrent())
-			{
-				hazardValue = RunSettings.GetValue(RunSettings.SETTINGTYPE.Hazard_TheLavaRises);
-				if (hazardValue == 0)
-				{
-					LogLavaDiag("skip: Hazard_TheLavaRises=0 (hazard disabled)");
-					return false;
-				}
-			}
-		}
-		catch
-		{
-			LogLavaDiag("skip: RunSettings.GetValue threw exception");
-			return false;
-		}
-		LavaRising lavaRising = null;
-		try
-		{
-			if (!TryResolveActiveSceneLavaRising(out lavaRising))
-			{
-				LogLavaDiag("skip: no active LavaRising for current segment");
-				return false;
-			}
-		}
-		catch
-		{
-			LogLavaDiag("skip: resolve LavaRising threw exception");
-			return false;
-		}
-		if (lavaRising == null || lavaRising.lava == null || lavaRising.topTransform == null || lavaRising.ended)
-		{
-			LogLavaDiag($"skip: lavaRising null={lavaRising == null} lava null={lavaRising?.lava == null} top null={lavaRising?.topTransform == null} ended={lavaRising?.ended}");
-			return false;
-		}
-		float lavaHeight = lavaRising.lava.transform.position.y;
-		float topHeight = lavaRising.topTransform.position.y;
-		distance = Mathf.Max(subjectPosition.y - lavaHeight, 0f);
-		if (distance <= 0.05f)
-		{
-			distance = 0f;
-			etaSeconds = 0f;
-			hasEta = true;
-			return true;
-		}
-		float remainingTravelTime = Mathf.Max(lavaRising.travelTime - lavaRising.timeTraveled, 0f);
-		float remainingHeight = Mathf.Max(topHeight - lavaHeight, 0f);
-		float verticalRate = ((remainingTravelTime > 0.05f) ? (remainingHeight / remainingTravelTime) : 0f);
-		if (verticalRate <= 0.01f && lavaRising.travelTime > 0.05f)
-		{
-			verticalRate = Mathf.Max((topHeight - lavaHeight) / lavaRising.travelTime, 0f);
-		}
-		if (verticalRate <= 0.01f)
-		{
-			return true;
-		}
-		float waitRemaining = 0f;
-		if (!lavaRising.started)
-		{
-			waitRemaining = ((lavaRising.secondsWaitedToStart > 0f) ? Mathf.Max(lavaRising.initialWaitTime - lavaRising.secondsWaitedToStart, 0f) : Mathf.Max(lavaRising.initialWaitTime, 0f));
-		}
-		etaSeconds = waitRemaining + distance / verticalRate;
-		hasEta = true;
-		return true;
-	}
-
-
-	private void LogLavaDiag(string message)
-	{
-		if (!EnableDebugDiagnostics)
-		{
-			return;
-		}
-		float now = Time.realtimeSinceStartup;
-		if (now - _lastLavaDiagLogTime < 5f)
-		{
-			return;
-		}
-		_lastLavaDiagLogTime = now;
-		try
-		{
-			Logger.LogWarning("[Fog&ColdControl] LavaDiag: " + message);
-		}
-		catch
-		{
-		}
-	}
-
-
 	private static Camera ResolveActiveViewCamera()
 	{
 		Camera viewCamera = Camera.main;
@@ -1119,10 +1017,6 @@ public sealed partial class Plugin
 		if (!TryGetLavaApproach(out var distance, out var etaSeconds, out var hasEta))
 		{
 			return string.Empty;
-		}
-		if (IsVoidGhostsHazardCurrent())
-		{
-			return BuildFogUiBadge("PETR", "#A9B7C6", GetPetrifyApproachUiEntryText(distance, etaSeconds, hasEta));
 		}
 		return BuildFogUiBadge("LAV", "#FF7A3D", GetLavaApproachUiEntryText(distance, etaSeconds, hasEta));
 	}
@@ -1511,7 +1405,7 @@ public sealed partial class Plugin
 	}
 
 
-	private static bool TryReadHostFogSpeed(out float fogSpeed)
+	private bool TryReadHostFogSpeed(out float fogSpeed)
 	{
 		fogSpeed = 0f;
 		if (!PhotonNetwork.InRoom || PhotonNetwork.CurrentRoom == null || PhotonNetwork.CurrentRoom.Players == null)
@@ -1527,16 +1421,28 @@ public sealed partial class Plugin
 		{
 			return false;
 		}
+		// Newer hosts scope their speed to the current scene and fog origin.
+		// Legacy hosts without these keys remain compatible.
+		if (hostPlayer.CustomProperties.ContainsKey("FogClimb.FogSpeedOrigin")
+			&& (_orbFogHandler == null || !(hostPlayer.CustomProperties["FogClimb.FogSpeedOrigin"] is int origin) || origin != _orbFogHandler.currentID))
+		{
+			return false;
+		}
+		if (hostPlayer.CustomProperties.ContainsKey("FogClimb.FogSpeedScene")
+			&& !Equals(hostPlayer.CustomProperties["FogClimb.FogSpeedScene"], SceneManager.GetActiveScene().name))
+		{
+			return false;
+		}
 		object rawValue = hostPlayer.CustomProperties["FogClimb.FogSpeed"];
 		if (rawValue is float floatValue)
 		{
-			fogSpeed = Mathf.Max(floatValue, 0f);
-			return true;
+			fogSpeed = floatValue;
+			return FogSpeedSamples.IsValidSpeed(fogSpeed);
 		}
 		if (rawValue is string stringValue && float.TryParse(stringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedSpeed))
 		{
-			fogSpeed = Mathf.Max(parsedSpeed, 0f);
-			return true;
+			fogSpeed = parsedSpeed;
+			return FogSpeedSamples.IsValidSpeed(fogSpeed);
 		}
 		return false;
 	}
@@ -1549,20 +1455,36 @@ public sealed partial class Plugin
 			_lastAdvertisedFogSpeed = -1f;
 			return;
 		}
-		float effectiveSpeed = Mathf.Max(_orbFogHandler.speed, 0f);
-		if (Mathf.Abs(effectiveSpeed - _lastAdvertisedFogSpeed) <= 0.005f)
+		float effectiveSpeed = _orbFogHandler.speed;
+		if (!FogSpeedSamples.IsValidSpeed(effectiveSpeed))
+		{
+			return;
+		}
+		int origin = _orbFogHandler.currentID;
+		string scene = SceneManager.GetActiveScene().name;
+		if (effectiveSpeed == _lastAdvertisedFogSpeed && origin == _lastAdvertisedFogSpeedOrigin && scene == _lastAdvertisedFogSpeedScene)
 		{
 			return;
 		}
 		float now = Time.unscaledTime;
-		if (now - _lastFogSpeedAdvertiseTime < 1f)
+		if (now - _lastFogSpeedAdvertiseTime < 0.2f)
 		{
 			return;
 		}
 		try
 		{
-			PhotonNetwork.LocalPlayer.SetCustomProperties(new ExitGames.Client.Photon.Hashtable { { "FogClimb.FogSpeed", effectiveSpeed } });
+			if (!PhotonNetwork.LocalPlayer.SetCustomProperties(new ExitGames.Client.Photon.Hashtable
+			{
+				{ "FogClimb.FogSpeed", effectiveSpeed },
+				{ "FogClimb.FogSpeedOrigin", origin },
+				{ "FogClimb.FogSpeedScene", scene }
+			}))
+			{
+				return;
+			}
 			_lastAdvertisedFogSpeed = effectiveSpeed;
+			_lastAdvertisedFogSpeedOrigin = origin;
+			_lastAdvertisedFogSpeedScene = scene;
 			_lastFogSpeedAdvertiseTime = now;
 		}
 		catch (Exception ex)
@@ -1588,7 +1510,7 @@ public sealed partial class Plugin
 		if (TryReadHostFogSpeed(out var hostSpeed))
 		{
 			_syncedHostFogSpeed = hostSpeed;
-			if (_orbFogHandler != null && Mathf.Abs(_orbFogHandler.speed - hostSpeed) > 0.005f)
+			if (_orbFogHandler != null && _orbFogHandler.speed != hostSpeed)
 			{
 				_orbFogHandler.speed = hostSpeed;
 				_guestAppliedFogSpeed = hostSpeed;

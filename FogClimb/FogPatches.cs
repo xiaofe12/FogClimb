@@ -68,9 +68,22 @@ internal static class OrbFogHandlerSetFogOriginPatch
 [HarmonyPatch(typeof(OrbFogHandler), "RPC_InitFog")]
 internal static class OrbFogHandlerRpcInitFogPatch
 {
-	private static void Postfix(OrbFogHandler __instance)
+	private static void Postfix(OrbFogHandler __instance, float s, bool moving, Photon.Pun.PhotonMessageInfo info)
 	{
 		Plugin.NotifyFogHandlerChanged(__instance);
+		if (info.Sender != null && info.Sender.IsMasterClient)
+		{
+			Plugin.NotifyGuestFogSnapshot(__instance, s, moving);
+		}
+	}
+}
+
+[HarmonyPatch(typeof(OrbFogHandler), "RPCA_SyncFog")]
+internal static class OrbFogHandlerSyncFogPatch
+{
+	private static void Postfix(OrbFogHandler __instance, float s, bool moving)
+	{
+		Plugin.NotifyGuestFogSnapshot(__instance, s, moving);
 	}
 }
 

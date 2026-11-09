@@ -540,57 +540,16 @@ public sealed partial class Plugin
 	private static bool TryGetNextBiomeDisplayName(bool isChineseLanguage, out string biomeName)
 	{
 		biomeName = string.Empty;
-		if (!ShouldShowNextBiomeDisplay())
+		if (NextBiomeUiEnabled?.Value == false || !TryGetCurrentGameplaySegment(out var currentSegment))
 		{
 			return false;
 		}
-		if (!TryGetCurrentGameplaySegment(out var currentSegment))
-		{
-			return false;
-		}
-		int nextSegmentIndex = (int)currentSegment + 1;
-		if (Singleton<MapHandler>.Instance == null || Singleton<MapHandler>.Instance.segments == null || nextSegmentIndex < 0 || nextSegmentIndex >= Singleton<MapHandler>.Instance.segments.Length)
-		{
-			return false;
-		}
-		Biome.BiomeType nextBiome = MapHandler.GetBiomeForSegment(nextSegmentIndex);
-		if (!IsSupportedNextBiome(nextBiome))
+		if (!NextBiomeResolver.TryGetNextBiome(Singleton<MapHandler>.Instance, currentSegment, out var nextBiome))
 		{
 			return false;
 		}
 		biomeName = GetDisplayNextBiomeName(nextBiome, isChineseLanguage);
 		return !string.IsNullOrWhiteSpace(biomeName);
-	}
-
-
-	private static bool ShouldShowNextBiomeDisplay()
-	{
-		if (!IsGameplayFogScene(SceneManager.GetActiveScene()) || LoadingScreenHandler.loading || ShouldHideFogRelatedUiForCurrentSegment())
-		{
-			return false;
-		}
-		Plugin instance = Instance;
-		if (instance == null || instance._fogPaused)
-		{
-			return false;
-		}
-		if (TryGetCurrentGameplaySegment(out var currentSegment))
-		{
-			if ((int)currentSegment >= 3)
-			{
-				return false;
-			}
-			return true;
-		}
-		if (instance._orbFogHandler == null)
-		{
-			return false;
-		}
-		if (!instance._orbFogHandler.isMoving)
-		{
-			return instance._orbFogHandler.hasArrived;
-		}
-		return true;
 	}
 
 
@@ -632,16 +591,6 @@ public sealed partial class Plugin
 	}
 
 
-	private static bool IsSupportedNextBiome(Biome.BiomeType biomeType)
-	{
-		if (biomeType != Biome.BiomeType.Roots && biomeType != Biome.BiomeType.Tropics && biomeType != Biome.BiomeType.Alpine && biomeType != Biome.BiomeType.Mesa && biomeType != Biome.BiomeType.Volcano)
-		{
-			return biomeType == Biome.BiomeType.Swamp;
-		}
-		return true;
-	}
-
-
 	private static string GetDisplayNextBiomeName(Biome.BiomeType biomeType, bool isChineseLanguage)
 	{
 		if (!isChineseLanguage)
@@ -665,7 +614,7 @@ public sealed partial class Plugin
 			Biome.BiomeType.Mesa => "方山", 
 			Biome.BiomeType.Volcano => "火山", 
 			Biome.BiomeType.Swamp => "雾沼", 
-			_ => biomeType.ToString(), 
+			_ => GetLocalizedBiomeName(biomeType, isChineseLanguage),
 		};
 	}
 
@@ -729,7 +678,9 @@ public sealed partial class Plugin
 	{
 		if (TryResolveActiveSceneLavaRising(out var lavaRising))
 		{
-			return lavaRising.isGloom || lavaRising.risingFieldType == LavaRising.RisingFieldType.VoidGhosts;
+			// 3.0.1 起 LavaRising.isGloom 已降为 private；isGloom 等价于 risingFieldType == Gloom，改为直接读公开字段
+			return lavaRising.risingFieldType == LavaRising.RisingFieldType.Gloom
+				|| lavaRising.risingFieldType == LavaRising.RisingFieldType.VoidGhosts;
 		}
 		return false;
 	}
@@ -1442,7 +1393,6 @@ public sealed partial class Plugin
 		_fogEtaLastObservedTime = sampleTime;
 		_fogEtaEstimatedUnitsPerSecond = 0f;
 		_fogEtaHasReliableRate = false;
-		ResetGuestFogSpeedDisplay();
 	}
 
 
@@ -1454,18 +1404,6 @@ public sealed partial class Plugin
 		_fogEtaEstimatedUnitsPerSecond = 0f;
 		_fogEtaHasReliableRate = false;
 		ResetFogArrivalMetricsCache();
-		ResetGuestFogSpeedDisplay();
-	}
-
-
-	private void ResetGuestFogSpeedDisplay()
-	{
-		_guestFogSpeedDisplayOriginId = -1;
-		_guestFogSpeedDisplayValue = 0f;
-		_guestFogSpeedStableCandidate = 0f;
-		_guestFogSpeedStableSince = -1f;
-		_guestFogSpeedHasDisplay = false;
-		_guestFogSpeedLastUpdateTime = -1f;
 	}
 
 
@@ -2274,111 +2212,26 @@ public sealed partial class Plugin
 	}
 
 
-	private static string FormatGuestFogSpeedDisplayValue(float estimatedSpeed)
+	private bool TryGetGuestEstimatedFogSpeed(out float speed)
 	{
-		return FormatFogSpeedValue(QuantizeGuestFogSpeedForDisplay(estimatedSpeed));
-	}
-
-
-	private static float QuantizeGuestFogSpeedForDisplay(float estimatedSpeed)
-	{
-		float num = Mathf.Max(estimatedSpeed, 0f);
-		float step = Mathf.Max(0.1f, 0.01f);
-		return Mathf.Ceil((num - 0.001f) / step) * step;
-	}
-
-
-	private bool TryGetGuestEstimatedFogSpeed(out float estimatedSpeed)
-	{
-		estimatedSpeed = 0f;
-		if (!TryResolveGuestEstimatedFogSpeed(out var rawEstimatedSpeed))
-		{
-			ResetGuestFogSpeedDisplay();
-			return false;
-		}
-		return TryStabilizeGuestFogSpeedDisplay(rawEstimatedSpeed, out estimatedSpeed);
-	}
-
-
-	private bool TryResolveGuestEstimatedFogSpeed(out float estimatedSpeed)
-	{
-		estimatedSpeed = 0f;
-		if (!IsReadOnlyFogUiViewer() || _orbFogHandler == null || IsFogRemovedInCurrentScene())
+		speed = 0f;
+		if (!IsReadOnlyFogUiViewer() || _orbFogHandler == null || IsFogRemovedInCurrentScene()
+			|| _fogPaused || !_orbFogHandler.isMoving || _orbFogHandler.hasArrived)
 		{
 			return false;
 		}
-		if (_fogPaused || !_orbFogHandler.isMoving || _orbFogHandler.hasArrived)
+		// Host metadata is authoritative: apply changes immediately and use the
+		// same formatting as the host, without upward rounding or a stable delay.
+		if (FogSpeedSamples.IsValidSpeed(_syncedHostFogSpeed))
 		{
-			return false;
-		}
-		if (_syncedHostFogSpeed >= 0.02f)
-		{
-			estimatedSpeed = _syncedHostFogSpeed;
+			speed = _syncedHostFogSpeed;
 			return true;
 		}
-		if (_fogEtaHasReliableRate && _fogEtaEstimatedUnitsPerSecond >= 0.02f)
-		{
-			estimatedSpeed = _fogEtaEstimatedUnitsPerSecond;
-			return true;
-		}
-		if (TryGetFogArrivalRemainingDistance(out var remainingDistance) && remainingDistance > 0.05f && TryGetFogArrivalEtaSeconds(out var etaSeconds) && etaSeconds > 0.05f)
-		{
-			estimatedSpeed = remainingDistance / etaSeconds;
-			return estimatedSpeed >= 0.02f;
-		}
-		float localSpeed = Mathf.Max(_orbFogHandler.speed, 0f);
-		if (localSpeed >= 0.02f)
-		{
-			estimatedSpeed = localSpeed;
-			return true;
-		}
-		return false;
-	}
-
-
-	private bool TryStabilizeGuestFogSpeedDisplay(float rawEstimatedSpeed, out float displayedSpeed)
-	{
-		displayedSpeed = 0f;
-		if (_orbFogHandler == null)
+		if (_guestFogSampleHandler != _orbFogHandler || _guestFogSampleHostId != (PhotonNetwork.MasterClient?.ActorNumber ?? -1))
 		{
 			return false;
 		}
-		int originId = _orbFogHandler.currentID;
-		float now = Time.unscaledTime;
-		float quantizedSpeed = QuantizeGuestFogSpeedForDisplay(Mathf.Max(rawEstimatedSpeed, 0f));
-		if (!_guestFogSpeedHasDisplay || _guestFogSpeedDisplayOriginId != originId)
-		{
-			_guestFogSpeedDisplayOriginId = originId;
-			_guestFogSpeedDisplayValue = quantizedSpeed;
-			_guestFogSpeedStableCandidate = quantizedSpeed;
-			_guestFogSpeedStableSince = now;
-			_guestFogSpeedHasDisplay = true;
-			_guestFogSpeedLastUpdateTime = now;
-			displayedSpeed = quantizedSpeed;
-			return displayedSpeed >= 0.02f;
-		}
-		float tolerance = Mathf.Max(0.001f, 0.001f);
-		if (Mathf.Abs(quantizedSpeed - _guestFogSpeedDisplayValue) <= tolerance)
-		{
-			_guestFogSpeedStableCandidate = quantizedSpeed;
-			_guestFogSpeedStableSince = now;
-			displayedSpeed = _guestFogSpeedDisplayValue;
-			return displayedSpeed >= 0.02f;
-		}
-		if (Mathf.Abs(quantizedSpeed - _guestFogSpeedStableCandidate) > tolerance)
-		{
-			_guestFogSpeedStableCandidate = quantizedSpeed;
-			_guestFogSpeedStableSince = now;
-		}
-		bool num = _guestFogSpeedStableSince >= 0f && now - _guestFogSpeedStableSince >= 3f;
-		bool updateIntervalPassed = _guestFogSpeedLastUpdateTime < 0f || now - _guestFogSpeedLastUpdateTime >= 1.5f;
-		if (num && updateIntervalPassed)
-		{
-			_guestFogSpeedDisplayValue = quantizedSpeed;
-			_guestFogSpeedLastUpdateTime = now;
-		}
-		displayedSpeed = _guestFogSpeedDisplayValue;
-		return displayedSpeed >= 0.02f;
+		return _guestFogSpeedSamples.TryGetSpeed(_orbFogHandler.currentID, Time.time, out speed);
 	}
 
 
@@ -2482,9 +2335,12 @@ public sealed partial class Plugin
 		_lastRemoteStatusSyncTime = -0.25f;
 		_lastCompassGrantSyncTime = -0.75f;
 		_lastAdvertisedFogSpeed = -1f;
+		_lastAdvertisedFogSpeedOrigin = -1;
+		_lastAdvertisedFogSpeedScene = null;
 		_lastFogSpeedAdvertiseTime = -999f;
 		_syncedHostFogSpeed = -1f;
 		_guestAppliedFogSpeed = -1f;
+		ResetGuestFogSpeedSamples();
 		_fogEtaLastRateResetTime = -999f;
 		_fogHandlerSearchTimer = 0f;
 		_grantedCampfireCompassIds.Clear();

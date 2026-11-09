@@ -1214,7 +1214,7 @@ public sealed partial class Plugin
 			ConfigKey.FogTimingUiEnabled => isChineseLanguage ? "控制是否显示毒雾延迟倒计时条目。默认开启。" : "Shows or hides the fog delay countdown entry. Default: On.",
 			ConfigKey.DirectStartUiEnabled => isChineseLanguage ? "控制是否显示直达进度条目。默认开启。" : "Shows or hides the direct start progress entry. Default: On.",
 			ConfigKey.FogApproachUiEnabled => isChineseLanguage ? "控制是否显示毒雾接近条目（距离与预计到达时间）。默认开启。" : "Shows or hides the fog approach entry (distance and ETA). Default: On.",
-			ConfigKey.LavaApproachUiEnabled => isChineseLanguage ? "控制是否显示熔岩/石化接近条目。默认开启。" : "Shows or hides the lava/petrify approach entry. Default: On.",
+			ConfigKey.LavaApproachUiEnabled => isChineseLanguage ? "控制是否显示熔炉内的熔岩接近信息。火山阶段不显示。默认开启。" : "Shows or hides lava approach information inside the Kiln. Hidden in the volcano stage. Default: On.",
 			ConfigKey.NextBiomeUiEnabled => isChineseLanguage ? "控制是否显示下一生态区条目。默认开启。" : "Shows or hides the next biome entry. Default: On.",
 			_ => string.Empty, 
 		}).Replace("FogClimb", "Fog&ColdControl").Replace("Fog Climb", "Fog&ColdControl");

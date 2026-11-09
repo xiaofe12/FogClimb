@@ -20,7 +20,7 @@ using Zorro.Core;
 
 namespace FogColdControl;
 
-[BepInPlugin("com.github.Thanks.FogClimb", "Fog&ColdControl", "1.1.9")]
+[BepInPlugin("com.github.Thanks.FogClimb", "Fog&ColdControl", "1.1.7")]
 [BepInDependency("com.github.PEAKModding.PEAKLib.ModConfig", BepInDependency.DependencyFlags.SoftDependency)]
 public sealed partial class Plugin : BaseUnityPlugin
 {
@@ -238,7 +238,7 @@ public sealed partial class Plugin : BaseUnityPlugin
 	public const string PluginName = "Fog&ColdControl";
 
 
-	public const string PluginVersion = "1.1.9";
+	public const string PluginVersion = "1.1.7";
 
 
 	private const string PreferredConfigFileName = "Thanks.Fog&ColdControl.cfg";
@@ -434,21 +434,6 @@ public sealed partial class Plugin : BaseUnityPlugin
 
 
 	private const float FogDistanceEtaRefreshIntervalSeconds = 0.8f;
-
-
-	private const float GuestFogSpeedDisplaySmoothing = 0.03f;
-
-
-	private const float GuestFogSpeedStableTolerance = 0.001f;
-
-
-	private const float GuestFogSpeedStableConfirmSeconds = 3f;
-
-
-	private const float GuestFogSpeedDisplayStep = 0.1f;
-
-
-	private const float GuestFogSpeedMinUpdateIntervalSeconds = 1.5f;
 
 
 	private const int FogUiDelaySecondsIntegerDigits = 2;
@@ -1042,7 +1027,6 @@ public sealed partial class Plugin : BaseUnityPlugin
 	private float _weatherUiGraceUntil = -1f;
 
 
-private float _lastLavaDiagLogTime = -999f;
 
 
 	private static readonly bool EnableDebugDiagnostics = false;
@@ -1151,6 +1135,8 @@ private float _lastLavaDiagLogTime = -999f;
 
 
 	private float _lastAdvertisedFogSpeed = -1f;
+	private int _lastAdvertisedFogSpeedOrigin = -1;
+	private string _lastAdvertisedFogSpeedScene;
 
 
 	private float _lastFogSpeedAdvertiseTime = -999f;
@@ -1175,24 +1161,6 @@ private float _lastLavaDiagLogTime = -999f;
 
 
 	private float _fogDistanceEtaSeconds;
-
-
-	private int _guestFogSpeedDisplayOriginId = -1;
-
-
-	private float _guestFogSpeedDisplayValue;
-
-
-	private float _guestFogSpeedStableCandidate;
-
-
-	private float _guestFogSpeedStableSince = -1f;
-
-
-	private bool _guestFogSpeedHasDisplay;
-
-
-	private float _guestFogSpeedLastUpdateTime = -1f;
 
 
 	private float _lastGuestFogDiagLogTime = -999f;

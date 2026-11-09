@@ -123,7 +123,7 @@ public sealed partial class Plugin
 
 	private static bool ShouldShowLavaApproachUiForCurrentSegment()
 	{
-		return TryResolveActiveSceneLavaRising(out _);
+		return TryGetCurrentGameplaySegment(out var segment) && segment == Segment.TheKiln;
 	}
 
 
@@ -988,6 +988,7 @@ public sealed partial class Plugin
 			TryAppendDirectStartEntry(_fogUiDisplayEntries, isChineseLanguage);
 			MoveLastFogUiEntryOfKindToEnd(FogUiIconKind.Buffer);
 			MoveLastFogUiEntryOfKindToEnd(FogUiIconKind.Delay);
+			TryAppendNextBiomeEntry(_fogUiDisplayEntries, isChineseLanguage);
 			ApplyFogUiEntries();
 			return;
 		}
@@ -1315,11 +1316,6 @@ public sealed partial class Plugin
 	{
 		if (targetEntries == null || LavaApproachUiEnabled?.Value == false || !TryGetLavaApproach(out var distance, out var etaSeconds, out var hasEta))
 		{
-			return;
-		}
-		if (IsVoidGhostsHazardCurrent())
-		{
-			targetEntries.Add(new FogUiDisplayEntry(FogUiIconKind.Petrify, ParseColorOrDefault("#A9B7C6"), GetPetrifyApproachUiEntryText(distance, etaSeconds, hasEta)));
 			return;
 		}
 		targetEntries.Add(new FogUiDisplayEntry(FogUiIconKind.Lava, ParseColorOrDefault("#FF7A3D"), GetLavaApproachUiEntryText(distance, etaSeconds, hasEta)));
@@ -1961,9 +1957,10 @@ public sealed partial class Plugin
 	}
 
 
-	private static string GetGuestFogSpeedUiEntryText(float estimatedSpeed)
+	private string GetGuestFogSpeedUiEntryText(float estimatedSpeed)
 	{
-		return Colorize(FormatGuestFogSpeedDisplayValue(estimatedSpeed), "#D6F1FF");
+		string prefix = FogSpeedSamples.IsValidSpeed(_syncedHostFogSpeed) ? string.Empty : "≈";
+		return Colorize(prefix + FormatFogSpeedValue(estimatedSpeed), "#D6F1FF");
 	}
 
 
@@ -2039,14 +2036,6 @@ public sealed partial class Plugin
 		string distanceText = Colorize(FormatFogDistanceValue(distance), "#FFD1A6");
 		string timeText = (hasEta ? FormatFogEtaTime(etaSeconds) : "--:--");
 		return distanceText + " " + Colorize("/", "#B7C0CC") + " " + Colorize(timeText, "#FFD1A6");
-	}
-
-
-	private string GetPetrifyApproachUiEntryText(float distance, float etaSeconds, bool hasEta)
-	{
-		string distanceText = Colorize(FormatFogDistanceValue(distance), "#D5DEE8");
-		string timeText = (hasEta ? FormatFogEtaTime(etaSeconds) : "--:--");
-		return distanceText + " " + Colorize("/", "#B7C0CC") + " " + Colorize(timeText, "#D5DEE8");
 	}
 
 
